@@ -1,0 +1,291 @@
+import React, { useState, useEffect } from "react";
+import { useParams, useNavigate, Link } from "react-router-dom";
+import { getFirestore, doc, getDoc, collection, addDoc, query, where, getDocs, serverTimestamp } from "firebase/firestore";
+import { auth } from "../../firebase";
+import { TrophyIcon, UserGroupIcon, CalendarIcon, ChartBarIcon } from "@heroicons/react/24/solid";
+import type { League } from "../../models/league";
+
+const JoinLeague: React.FC = () => {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [league, setLeague] = useState<League | null>(null);
+  const [joinMessage, setJoinMessage] = useState("");
+  const [alreadyMember, setAlreadyMember] = useState(false);
+  const [pendingRequest, setPendingRequest] = useState(false);
+
+  useEffect(() => {
+    const fetchLeagueData = async () => {
+      if (!id || !auth.currentUser) {
+        navigate("/leagues");
+        return;
+      }
+      
+      setLoading(true);
+      setError(null);
+      
+      try {
+        const db = getFirestore();
+        const leagueRef = doc(db, "leagues", id);
+        const leagueSnap = await getDoc(leagueRef);
+        
+        if (!leagueSnap.exists()) {
+          setError("League not found");
+          setLoading(false);
+          return;
+        }
+        
+        const leagueData = { id: leagueSnap.id, ...leagueSnap.data() } as League;
+        setLeague(leagueData);
+        
+        // Check if user is already a member or has a pending request
+        const membershipQuery = query(
+          collection(db, "leagueMemberships"),
+          where("leagueId", "==", id),
+          where("userId", "==", auth.currentUser.uid)
+        );
+        
+        const membershipSnap = await getDocs(membershipQuery);
+        if (!membershipSnap.empty) {
+          const membership = membershipSnap.docs[0].data();
+          if (membership.status === "active") {
+            setAlreadyMember(true);
+          } else if (membership.status === "pending") {
+            setPendingRequest(true);
+          }
+        }
+      } catch (err) {
+        console.error("Error fetching league data:", err);
+        setError("Failed to load league data");
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    fetchLeagueData();
+  }, [id, navigate]);
+
+  const handleJoinRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!id || !auth.currentUser || !league) {
+      setError("You must be logged in to join a league");
+      return;
+    }
+    
+    if (alreadyMember) {
+      navigate(`/leagues/${id}`);
+      return;
+    }
+    
+    if (pendingRequest) {
+      setError("You already have a pending request to join this league");
+      return;
+    }
+    
+    setSubmitting(true);
+    setError(null);
+    
+    try {
+      const db = getFirestore();
+      
+      // If the league doesn't require approval, directly add as member
+      if (!league.settings.allowJoinRequests) {
+        // Add user as a member directly
+        await addDoc(collection(db, "leagueMemberships"), {
+          leagueId: id,
+          userId: auth.currentUser.uid,
+          joinedAt: serverTimestamp(),
+          status: "active",
+          role: "player",
+          stats: {
+            gamesPlayed: 0,
+            gamesWon: 0,
+            totalPoints: 0,
+            winRate: 0,
+            currentStreak: 0,
+            longestWinStreak: 0,
+          }
+        });
+        
+        // Update league member count
+        // In a real implementation, this would be handled by a server function
+        // to ensure atomic updates
+      } else {
+        // Create a join request
+        await addDoc(collection(db, "leagueJoinRequests"), {
+          leagueId: id,
+          userId: auth.currentUser.uid,
+          requestedAt: serverTimestamp(),
+          status: "pending",
+          message: joinMessage,
+        });
+      }
+      
+      // Navigate back to league page
+      navigate(`/leagues/${id}`);
+    } catch (err) {
+      console.error("Error joining league:", err);
+      setError("Failed to join league. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+  
+  if (error || !league) {
+    return (
+      <div className="p-6 max-w-4xl mx-auto">
+        <div className="bg-red-100 border-l-4 border-red-500 p-4 mb-4">
+          <div className="flex">
+            <div className="ml-3">
+              <p className="text-red-700">{error || "League not found"}</p>
+            </div>
+          </div>
+        </div>
+        <Link to="/leagues" className="text-blue-600 hover:underline">
+          &larr; Back to Leagues
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6 max-w-4xl mx-auto">
+      <h1 className="text-2xl font-bold mb-6 flex items-center">
+        <TrophyIcon className="h-7 w-7 mr-2 text-blue-500" />
+        Join League: {league.name}
+      </h1>
+      
+      <div className="bg-white dark:bg-zinc-800 rounded-lg shadow p-6 mb-6">
+        <h2 className="text-xl font-semibold mb-4">League Information</h2>
+        
+        <p className="text-gray-700 dark:text-gray-300 mb-4">{league.description}</p>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div>
+            <h3 className="text-lg font-medium mb-2">Details</h3>
+            <ul className="space-y-2 text-gray-700 dark:text-gray-300">
+              <li className="flex items-center">
+                  <UserGroupIcon className="h-5 w-5 mr-2 text-gray-500" />
+                  <span>{league.stats?.totalMembers || 0} members</span>
+                </li>
+                <li className="flex items-center">
+                  <CalendarIcon className="h-5 w-5 mr-2 text-gray-500" />
+                  <span>Created {league.createdAt ? new Date(league.createdAt.toDate()).toLocaleDateString() : 'Unknown'}</span>
+                </li>
+                <li className="flex items-center">
+                  <ChartBarIcon className="h-5 w-5 mr-2 text-gray-500" />
+                  <span>{league.settings?.gameMode === "teams" ? "Team" : "Individual"} mode • {league.settings?.pointsToWin || 100} points</span>
+                </li>
+            </ul>
+          </div>
+          
+          <div>
+            <h3 className="text-lg font-medium mb-2">Game Settings</h3>
+            <ul className="space-y-2 text-gray-700 dark:text-gray-300">
+              <li><strong>Format:</strong> {league.settings?.tournamentFormat ? league.settings.tournamentFormat.replace('-', ' ') : 'Standard'}</li>
+              <li><strong>Rounds:</strong> {league.settings?.numberOfRounds || 0}</li>
+              <li><strong>Points System:</strong> {league.settings?.scoringSystem?.pointsPerWin || 0} pts win / {league.settings?.scoringSystem?.pointsPerDraw || 0} pts draw</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      
+      <div className="bg-white dark:bg-zinc-800 rounded-lg shadow p-6">
+        {alreadyMember ? (
+          <div className="text-center py-6">
+            <h2 className="text-xl font-semibold mb-2">You are already a member of this league</h2>
+            <p className="text-gray-600 dark:text-gray-400 mb-4">You can view league details and participate in games.</p>
+            <button
+              onClick={() => navigate(`/leagues/${id}`)}
+              className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+            >
+              Go to League
+            </button>
+          </div>
+        ) : pendingRequest ? (
+          <div className="text-center py-6">
+            <h2 className="text-xl font-semibold mb-2">Your request to join is pending</h2>
+            <p className="text-gray-600 dark:text-gray-400 mb-4">
+              You have already requested to join this league. The league administrator will review your request.
+            </p>
+            <button
+              onClick={() => navigate(`/leagues/${id}`)}
+              className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+            >
+              Go to League
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={handleJoinRequest}>
+            <h2 className="text-xl font-semibold mb-4">Join Request</h2>
+            
+            {error && (
+              <div className="bg-red-50 border-l-4 border-red-500 p-4 mb-4 dark:bg-red-900/20">
+                <p className="text-red-700 dark:text-red-300">{error}</p>
+              </div>
+            )}
+            
+            {league.settings?.allowJoinRequests && (
+              <div className="mb-4">
+                <label htmlFor="joinMessage" className="block text-sm font-medium mb-1">
+                  Message (Optional)
+                </label>
+                <textarea
+                  id="joinMessage"
+                  value={joinMessage}
+                  onChange={(e) => setJoinMessage(e.target.value)}
+                  placeholder="Introduce yourself to the league administrators"
+                  className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-700 dark:border-zinc-600"
+                  rows={3}
+                />
+                <p className="mt-1 text-sm text-gray-500">
+                  {league.settings?.allowJoinRequests 
+                    ? "Your request will need to be approved by a league administrator." 
+                    : "You will be added to the league immediately."}
+                </p>
+              </div>
+            )}
+            
+            <div className="flex justify-between">
+              <Link
+                to={`/leagues/${id}`}
+                className="px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300 dark:bg-zinc-700 dark:text-gray-200 dark:hover:bg-zinc-600"
+              >
+                Cancel
+              </Link>
+              
+              <button
+                type="submit"
+                disabled={submitting}
+                className={`px-4 py-2 rounded-md font-medium ${
+                  submitting
+                    ? "bg-gray-300 text-gray-500 cursor-not-allowed dark:bg-zinc-700 dark:text-zinc-400"
+                    : "bg-green-600 text-white hover:bg-green-700"
+                }`}
+              >
+                {submitting 
+                  ? "Processing..." 
+                  : league.settings?.allowJoinRequests 
+                    ? "Request to Join" 
+                    : "Join League"}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default JoinLeague;
