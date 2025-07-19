@@ -195,24 +195,6 @@ const AppContent: React.FC<{
             <NavbarItem href="/leagues" aria-label="Leagues">
               <TrophyIcon className="h-5 w-5" />
             </NavbarItem>
-            <NavbarItem
-              href="/games"
-              aria-label="My Games"
-              onClick={refreshInvitations}
-            >
-              <div className="relative">
-                <PlayIcon className="h-5 w-5" />
-                {pendingInvitations > 0 && (
-                  <NotificationIndicator
-                    count={pendingInvitations}
-                    size="small"
-                  />
-                )}
-              </div>
-            </NavbarItem>
-            <NavbarItem href="/rules" aria-label="Rules">
-              <ClipboardIcon />
-            </NavbarItem>
             {user ? (
               <Dropdown>
                 <DropdownButton as={NavbarItem}>
@@ -410,7 +392,11 @@ const AppContent: React.FC<{
         <Route
           path="/leagues/manage/:id"
           element={
-            user && !needsUsername ? <LeagueManagement /> : <Navigate to="/leagues" />
+            user && !needsUsername ? (
+              <LeagueManagement />
+            ) : (
+              <Navigate to="/leagues" />
+            )
           }
         />
         <Route path="*" element={<Navigate to="/" />} />

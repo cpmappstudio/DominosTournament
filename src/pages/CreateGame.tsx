@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { auth, createGame, searchUsers, isPlayerInActiveGame, GameMode, UserProfile } from "../firebase";
-import { ArrowLeftIcon, InformationCircleIcon, ExclamationTriangleIcon } from "@heroicons/react/24/solid";
+import { ArrowLeftIcon, InformationCircleIcon, ExclamationTriangleIcon, XMarkIcon, UserPlusIcon } from "@heroicons/react/24/solid";
 
 const CreateGame: React.FC = () => {
   const navigate = useNavigate();
@@ -10,16 +10,19 @@ const CreateGame: React.FC = () => {
   const [gameConfig, setGameConfig] = useState({
     gameMode: "teams" as GameMode,
     pointsToWin: 100,
-    opponent: "",
     numberOfPlayers: 2,
     startingPlayer: "creator", // creator, opponent, or random
     useBoricuaRules: true
   });
   
+  // Selected opponents with full profile data
+  const [selectedOpponents, setSelectedOpponents] = useState<UserProfile[]>([]);
+  
   // Search state
   const [searchTerm, setSearchTerm] = useState("");
   const [searchResults, setSearchResults] = useState<UserProfile[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [inputFocused, setInputFocused] = useState(false);
   
   // UI state
   const [error, setError] = useState<string | null>(null);
@@ -27,6 +30,15 @@ const CreateGame: React.FC = () => {
   const [activeStep, setActiveStep] = useState(1); // 1: Game settings, 2: Player selection
   const [isInActiveGame, setIsInActiveGame] = useState(false);
   const [isCheckingGameStatus, setIsCheckingGameStatus] = useState(true);
+  
+  // Calculate max opponents based on game mode and number of players
+  const getMaxOpponents = () => {
+    if (gameConfig.gameMode === "teams") {
+      return gameConfig.numberOfPlayers === 4 ? 3 : 1;
+    } else {
+      return gameConfig.numberOfPlayers - 1;
+    }
+  };
   
   // Check if user is already in an active game
   useEffect(() => {
@@ -62,7 +74,13 @@ const CreateGame: React.FC = () => {
       setIsSearching(true);
       try {
         const results = await searchUsers(searchTerm);
-        setSearchResults(results);
+        // Filter out already selected opponents and current user
+        const filteredResults = results.filter(user => {
+          const isCurrentUser = auth.currentUser && user.uid === auth.currentUser.uid;
+          const isAlreadySelected = selectedOpponents.some(opponent => opponent.uid === user.uid);
+          return !isCurrentUser && !isAlreadySelected;
+        });
+        setSearchResults(filteredResults);
       } catch (error) {
         console.error("Error searching opponents:", error);
       } finally {
@@ -72,7 +90,7 @@ const CreateGame: React.FC = () => {
     
     const debounce = setTimeout(searchOpponents, 500);
     return () => clearTimeout(debounce);
-  }, [searchTerm]);
+  }, [searchTerm, selectedOpponents]);
   
   // Handle form field changes
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -83,17 +101,54 @@ const CreateGame: React.FC = () => {
   // Handle radio/checkbox changes
   const handleOptionChange = (name: string, value: any) => {
     setGameConfig(prev => ({ ...prev, [name]: value }));
+    
+    // If changing game mode or number of players, check if we need to adjust selected opponents
+    if ((name === "gameMode" || name === "numberOfPlayers") && selectedOpponents.length > 0) {
+      const newMaxOpponents = name === "gameMode" && value === "teams" ? 
+        (gameConfig.numberOfPlayers === 4 ? 3 : 1) : 
+        (name === "numberOfPlayers" && value === 4 && gameConfig.gameMode === "teams" ? 3 : 1);
+      
+      if (selectedOpponents.length > newMaxOpponents) {
+        // Keep only the first newMaxOpponents opponents
+        setSelectedOpponents(prev => prev.slice(0, newMaxOpponents));
+        setError(`Game mode changed. Maximum number of opponents is now ${newMaxOpponents}.`);
+      }
+    }
   };
   
   // Handle opponent selection
   const handleSelectOpponent = (user: UserProfile) => {
-    setGameConfig(prev => ({ ...prev, opponent: user.uid }));
-    setSearchTerm(user.displayName);
+    // Check if opponent is already selected
+    if (selectedOpponents.some(opponent => opponent.uid === user.uid)) {
+      return;
+    }
+    
+    // Check if we've reached the maximum number of opponents
+    const maxOpponents = getMaxOpponents();
+    
+    if (selectedOpponents.length >= maxOpponents) {
+      setError(`You can only select ${maxOpponents} opponent(s) for this game mode`);
+      return;
+    }
+    
+    // Add opponent to selectedOpponents
+    setSelectedOpponents(prev => [...prev, user]);
+    
+    // Clear search input and error
+    setSearchTerm("");
+    setError(null);
+  };
+  
+  // Remove opponent from selection
+  const handleRemoveOpponent = (uid: string) => {
+    setSelectedOpponents(prev => prev.filter(opponent => opponent.uid !== uid));
+    setError(null);
   };
   
   // Navigate between steps
   const goToNextStep = () => {
     setActiveStep(2);
+    setError(null);
   };
   
   const goToPrevStep = () => {
@@ -109,8 +164,11 @@ const CreateGame: React.FC = () => {
       return;
     }
     
-    if (!gameConfig.opponent) {
-      setError("Please select an opponent");
+    // Check if we have the correct number of opponents
+    const requiredOpponents = getMaxOpponents();
+    
+    if (selectedOpponents.length !== requiredOpponents) {
+      setError(`Please select ${requiredOpponents} opponent(s) for this game mode`);
       return;
     }
     
@@ -118,33 +176,35 @@ const CreateGame: React.FC = () => {
     setError(null);
     
     try {
-    // Check if the user is in an active game before creating a new one
-    const hasActiveGame = await isPlayerInActiveGame(auth.currentUser.uid);
-    if (hasActiveGame) {
-      setError("You already have an active game. You must complete it before creating a new one.");
+      // Check if the user is in an active game before creating a new one
+      const hasActiveGame = await isPlayerInActiveGame(auth.currentUser.uid);
+      if (hasActiveGame) {
+        setError("You already have an active game. You must complete it before creating a new one.");
+        setIsCreating(false);
+        return;
+      }
+      
+      // For now, we'll use the first opponent for backward compatibility
+      // In a real implementation, you would update createGame to accept multiple opponents
+      const game = await createGame(selectedOpponents[0].uid, {
+        gameMode: gameConfig.gameMode,
+        pointsToWin: parseInt(gameConfig.pointsToWin.toString()),
+        numberOfPlayers: gameConfig.numberOfPlayers,
+        startingPlayer: gameConfig.startingPlayer,
+        useBoricuaRules: gameConfig.useBoricuaRules
+      });
+      
+      if (game && game.id) {
+        navigate(`/game/${game.id}`);
+      } else {
+        setError("Failed to create game");
+      }
+    } catch (error: any) {
+      console.error("Error creating game:", error);
+      setError(error.message || "An error occurred while creating the game");
+    } finally {
       setIsCreating(false);
-      return;
     }
-      
-    const game = await createGame(gameConfig.opponent, {
-      gameMode: gameConfig.gameMode,
-      pointsToWin: parseInt(gameConfig.pointsToWin.toString()),
-      numberOfPlayers: gameConfig.numberOfPlayers,
-      startingPlayer: gameConfig.startingPlayer,
-      useBoricuaRules: gameConfig.useBoricuaRules
-    });
-      
-    if (game && game.id) {
-      navigate(`/game/${game.id}`);
-    } else {
-      setError("Failed to create game");
-    }
-  } catch (error: any) {
-    console.error("Error creating game:", error);
-    setError(error.message || "An error occurred while creating the game");
-  } finally {
-    setIsCreating(false);
-  }
   };
   
   return (
@@ -380,18 +440,25 @@ const CreateGame: React.FC = () => {
             <>
               {/* Opponent Search */}
               <div className="mb-6">
-                <label className="block text-sm font-medium mb-2">Find Opponent</label>
+                <label className="block text-sm font-medium mb-2">
+                  Find Opponent
+                  <span className="ml-2 text-sm font-normal text-gray-500 dark:text-zinc-400">
+                    ({selectedOpponents.length} of {getMaxOpponents()} selected)
+                  </span>
+                </label>
                 <div className="relative">
                   <input
                     type="text"
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
+                    onFocus={() => setInputFocused(true)}
+                    onBlur={() => setTimeout(() => setInputFocused(false), 200)}
                     placeholder="Search by username or name (min 3 characters)"
                     className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-700 dark:border-zinc-600"
                   />
                   
                   {/* Search Results Dropdown */}
-                  {searchTerm.length >= 3 && (
+                  {searchTerm.length >= 3 && inputFocused && (
                     <div className="absolute z-10 w-full mt-1 bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded-md shadow-lg max-h-60 overflow-auto">
                       {isSearching ? (
                         <div className="p-3 text-center">
@@ -432,13 +499,52 @@ const CreateGame: React.FC = () => {
                   )}
                 </div>
                 
-                {/* Selected Opponent */}
-                {gameConfig.opponent && (
-                  <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900 rounded-md">
-                    <div className="font-medium">Selected opponent:</div>
-                    <div className="flex items-center mt-1">
-                      <span className="text-lg">{searchTerm}</span>
+                {/* Selected Opponents */}
+                {selectedOpponents.length > 0 && (
+                  <div className="mt-4">
+                    <h4 className="text-sm font-medium mb-2">Selected Opponents:</h4>
+                    <div className="space-y-2">
+                      {selectedOpponents.map(opponent => (
+                        <div 
+                          key={opponent.uid} 
+                          className="flex items-center justify-between p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900 rounded-md"
+                        >
+                          <div className="flex items-center">
+                            {opponent.photoURL && (
+                              <img 
+                                src={opponent.photoURL} 
+                                alt={opponent.displayName} 
+                                className="w-8 h-8 rounded-full mr-2"
+                              />
+                            )}
+                            <div>
+                              <span className="block font-medium">{opponent.displayName}</span>
+                              {opponent.username && (
+                                <span className="text-sm text-gray-500 dark:text-zinc-400">@{opponent.username}</span>
+                              )}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveOpponent(opponent.uid)}
+                            className="p-1 text-red-500 hover:text-red-700 rounded-full hover:bg-red-100 dark:hover:bg-red-900/20"
+                            aria-label="Remove opponent"
+                          >
+                            <XMarkIcon className="h-5 w-5" />
+                          </button>
+                        </div>
+                      ))}
                     </div>
+                  </div>
+                )}
+                
+                {/* Opponents needed info */}
+                {selectedOpponents.length < getMaxOpponents() && (
+                  <div className="mt-3 flex items-center text-blue-600 dark:text-blue-400 text-sm">
+                    <UserPlusIcon className="h-4 w-4 mr-1" />
+                    <span>
+                      {getMaxOpponents() - selectedOpponents.length} more opponent{getMaxOpponents() - selectedOpponents.length > 1 ? 's' : ''} needed
+                    </span>
                   </div>
                 )}
               </div>
@@ -454,15 +560,27 @@ const CreateGame: React.FC = () => {
                     </div>
                     <div>
                       <span className="block text-sm text-gray-500 dark:text-zinc-400">Players</span>
-                      <span className="font-medium">{gameConfig.numberOfPlayers} players</span>
+                      <span className="font-medium">{gameConfig.numberOfPlayers}</span>
                     </div>
                     <div>
                       <span className="block text-sm text-gray-500 dark:text-zinc-400">Points to Win</span>
-                      <span className="font-medium">{gameConfig.pointsToWin} points</span>
+                      <span className="font-medium">{gameConfig.pointsToWin}</span>
                     </div>
                     <div>
+                      <span className="block text-sm text-gray-500 dark:text-zinc-400">Starting Player</span>
+                      <span className="font-medium">
+                        {gameConfig.startingPlayer === "creator" 
+                          ? "Game Creator" 
+                          : gameConfig.startingPlayer === "opponent" 
+                            ? "Opponent" 
+                            : "Random Selection"}
+                      </span>
+                    </div>
+                    <div className="col-span-2">
                       <span className="block text-sm text-gray-500 dark:text-zinc-400">Rules</span>
-                      <span className="font-medium">{gameConfig.useBoricuaRules ? "Boricua Rules" : "Standard Rules"}</span>
+                      <span className="font-medium">
+                        {gameConfig.useBoricuaRules ? "Boricua (Puerto Rican)" : "Standard"}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -471,9 +589,9 @@ const CreateGame: React.FC = () => {
               {/* Submit Button */}
               <button
                 type="submit"
-                disabled={isCreating || !gameConfig.opponent}
+                disabled={isCreating || selectedOpponents.length !== getMaxOpponents() || isInActiveGame}
                 className={`w-full py-2 rounded-md font-medium ${
-                  isCreating || !gameConfig.opponent
+                  isCreating || selectedOpponents.length !== getMaxOpponents() || isInActiveGame
                     ? "bg-gray-300 text-gray-500 cursor-not-allowed dark:bg-zinc-700 dark:text-zinc-400"
                     : "bg-blue-600 text-white hover:bg-blue-700"
                 }`}

@@ -5,6 +5,29 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Vite + React + TS</title>
+    <script>
+      // Theme initialization - check preference with dark mode default
+      (function() {
+        // Get saved theme or use system preference with dark mode fallback
+        const savedTheme = localStorage.getItem('theme');
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        
+        // Default to dark mode unless explicitly set to light
+        const useDarkMode = savedTheme === 'dark' || 
+          (savedTheme === null && prefersDark) || 
+          savedTheme === null;
+        
+        if (useDarkMode) {
+          document.documentElement.classList.add('dark');
+          document.body.classList.add('dark');
+          localStorage.setItem('theme', 'dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+          document.body.classList.remove('dark');
+          localStorage.setItem('theme', 'light');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

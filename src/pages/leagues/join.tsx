@@ -1,8 +1,23 @@
 import React, { useState, useEffect } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { getFirestore, doc, getDoc, collection, addDoc, query, where, getDocs, serverTimestamp } from "firebase/firestore";
+import {
+  getFirestore,
+  doc,
+  getDoc,
+  collection,
+  addDoc,
+  query,
+  where,
+  getDocs,
+  serverTimestamp,
+} from "firebase/firestore";
 import { auth } from "../../firebase";
-import { TrophyIcon, UserGroupIcon, CalendarIcon, ChartBarIcon } from "@heroicons/react/24/solid";
+import {
+  TrophyIcon,
+  UserGroupIcon,
+  CalendarIcon,
+  ChartBarIcon,
+} from "@heroicons/react/24/solid";
 import type { League } from "../../models/league";
 
 const JoinLeague: React.FC = () => {
@@ -22,37 +37,55 @@ const JoinLeague: React.FC = () => {
         navigate("/leagues");
         return;
       }
-      
+
       setLoading(true);
       setError(null);
-      
+
       try {
         const db = getFirestore();
         const leagueRef = doc(db, "leagues", id);
         const leagueSnap = await getDoc(leagueRef);
-        
+
         if (!leagueSnap.exists()) {
           setError("League not found");
           setLoading(false);
           return;
         }
-        
-        const leagueData = { id: leagueSnap.id, ...leagueSnap.data() } as League;
+
+        const leagueData = {
+          id: leagueSnap.id,
+          ...leagueSnap.data(),
+        } as League;
         setLeague(leagueData);
-        
-        // Check if user is already a member or has a pending request
+
+        // Check if user is already a member
         const membershipQuery = query(
           collection(db, "leagueMemberships"),
           where("leagueId", "==", id),
-          where("userId", "==", auth.currentUser.uid)
+          where("userId", "==", auth.currentUser.uid),
         );
-        
+
         const membershipSnap = await getDocs(membershipQuery);
         if (!membershipSnap.empty) {
           const membership = membershipSnap.docs[0].data();
           if (membership.status === "active") {
             setAlreadyMember(true);
           } else if (membership.status === "pending") {
+            setPendingRequest(true);
+          }
+        }
+
+        // Also check if user already has a pending join request in leagueJoinRequests
+        if (!alreadyMember) {
+          const joinRequestQuery = query(
+            collection(db, "leagueJoinRequests"),
+            where("leagueId", "==", id),
+            where("userId", "==", auth.currentUser.uid),
+            where("status", "==", "pending")
+          );
+
+          const joinRequestSnap = await getDocs(joinRequestQuery);
+          if (!joinRequestSnap.empty) {
             setPendingRequest(true);
           }
         }
@@ -63,34 +96,50 @@ const JoinLeague: React.FC = () => {
         setLoading(false);
       }
     };
-    
+
     fetchLeagueData();
   }, [id, navigate]);
 
   const handleJoinRequest = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!id || !auth.currentUser || !league) {
       setError("You must be logged in to join a league");
       return;
     }
-    
+
     if (alreadyMember) {
       navigate(`/leagues/${id}`);
       return;
     }
-    
+
     if (pendingRequest) {
       setError("You already have a pending request to join this league");
       return;
     }
     
+    // Double-check for pending requests to prevent duplicates
+    const db = getFirestore();
+    const joinRequestQuery = query(
+      collection(db, "leagueJoinRequests"),
+      where("leagueId", "==", id),
+      where("userId", "==", auth.currentUser.uid),
+      where("status", "==", "pending")
+    );
+    
+    const joinRequestSnap = await getDocs(joinRequestQuery);
+    if (!joinRequestSnap.empty) {
+      setPendingRequest(true);
+      setError("You already have a pending request to join this league");
+      return;
+    }
+
     setSubmitting(true);
     setError(null);
-    
+
     try {
       const db = getFirestore();
-      
+
       // If the league doesn't require approval, directly add as member
       if (!league.settings.allowJoinRequests) {
         // Add user as a member directly
@@ -107,9 +156,9 @@ const JoinLeague: React.FC = () => {
             winRate: 0,
             currentStreak: 0,
             longestWinStreak: 0,
-          }
+          },
         });
-        
+
         // Update league member count
         // In a real implementation, this would be handled by a server function
         // to ensure atomic updates
@@ -122,10 +171,10 @@ const JoinLeague: React.FC = () => {
           status: "pending",
           message: joinMessage,
         });
+        
+        // Update local state to show pending request instead of navigating
+        setPendingRequest(true);
       }
-      
-      // Navigate back to league page
-      navigate(`/leagues/${id}`);
     } catch (err) {
       console.error("Error joining league:", err);
       setError("Failed to join league. Please try again.");
@@ -133,7 +182,7 @@ const JoinLeague: React.FC = () => {
       setSubmitting(false);
     }
   };
-  
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -141,7 +190,7 @@ const JoinLeague: React.FC = () => {
       </div>
     );
   }
-  
+
   if (error || !league) {
     return (
       <div className="p-6 max-w-4xl mx-auto">
@@ -160,52 +209,79 @@ const JoinLeague: React.FC = () => {
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
+    <div className="p-6 max-w-4xl mx-auto text-white">
       <h1 className="text-2xl font-bold mb-6 flex items-center">
         <TrophyIcon className="h-7 w-7 mr-2 text-blue-500" />
         Join League: {league.name}
       </h1>
-      
+
       <div className="bg-white dark:bg-zinc-800 rounded-lg shadow p-6 mb-6">
         <h2 className="text-xl font-semibold mb-4">League Information</h2>
-        
-        <p className="text-gray-700 dark:text-gray-300 mb-4">{league.description}</p>
-        
+
+        <p className="text-gray-700 dark:text-gray-300 mb-4">
+          {league.description}
+        </p>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div>
             <h3 className="text-lg font-medium mb-2">Details</h3>
             <ul className="space-y-2 text-gray-700 dark:text-gray-300">
               <li className="flex items-center">
-                  <UserGroupIcon className="h-5 w-5 mr-2 text-gray-500" />
-                  <span>{league.stats?.totalMembers || 0} members</span>
-                </li>
-                <li className="flex items-center">
-                  <CalendarIcon className="h-5 w-5 mr-2 text-gray-500" />
-                  <span>Created {league.createdAt ? new Date(league.createdAt.toDate()).toLocaleDateString() : 'Unknown'}</span>
-                </li>
-                <li className="flex items-center">
-                  <ChartBarIcon className="h-5 w-5 mr-2 text-gray-500" />
-                  <span>{league.settings?.gameMode === "teams" ? "Team" : "Individual"} mode • {league.settings?.pointsToWin || 100} points</span>
-                </li>
+                <UserGroupIcon className="h-5 w-5 mr-2 text-gray-500" />
+                <span>{league.stats?.totalMembers || 0} members</span>
+              </li>
+              <li className="flex items-center">
+                <CalendarIcon className="h-5 w-5 mr-2 text-gray-500" />
+                <span>
+                  Created{" "}
+                  {league.createdAt
+                    ? new Date(league.createdAt.toDate()).toLocaleDateString()
+                    : "Unknown"}
+                </span>
+              </li>
+              <li className="flex items-center">
+                <ChartBarIcon className="h-5 w-5 mr-2 text-gray-500" />
+                <span>
+                  {league.settings?.gameMode === "teams"
+                    ? "Team"
+                    : "Individual"}{" "}
+                  mode • {league.settings?.pointsToWin || 100} points
+                </span>
+              </li>
             </ul>
           </div>
-          
+
           <div>
             <h3 className="text-lg font-medium mb-2">Game Settings</h3>
             <ul className="space-y-2 text-gray-700 dark:text-gray-300">
-              <li><strong>Format:</strong> {league.settings?.tournamentFormat ? league.settings.tournamentFormat.replace('-', ' ') : 'Standard'}</li>
-              <li><strong>Rounds:</strong> {league.settings?.numberOfRounds || 0}</li>
-              <li><strong>Points System:</strong> {league.settings?.scoringSystem?.pointsPerWin || 0} pts win / {league.settings?.scoringSystem?.pointsPerDraw || 0} pts draw</li>
+              <li>
+                <strong>Format:</strong>{" "}
+                {league.settings?.tournamentFormat
+                  ? league.settings.tournamentFormat.replace("-", " ")
+                  : "Standard"}
+              </li>
+              <li>
+                <strong>Rounds:</strong> {league.settings?.numberOfRounds || 0}
+              </li>
+              <li>
+                <strong>Points System:</strong>{" "}
+                {league.settings?.scoringSystem?.pointsPerWin || 0} pts win /{" "}
+                {league.settings?.scoringSystem?.pointsPerDraw || 0} pts draw
+              </li>
             </ul>
           </div>
         </div>
       </div>
-      
+
       <div className="bg-white dark:bg-zinc-800 rounded-lg shadow p-6">
         {alreadyMember ? (
           <div className="text-center py-6">
-            <h2 className="text-xl font-semibold mb-2">You are already a member of this league</h2>
-            <p className="text-gray-600 dark:text-gray-400 mb-4">You can view league details and participate in games.</p>
+            <h2 className="text-xl font-semibold mb-2">
+              You are already a member of this league
+            </h2>
+            <p className="text-gray-600 dark:text-gray-400 mb-4">
+              You can view league details and participate in games.
+            </p>
             <button
               onClick={() => navigate(`/leagues/${id}`)}
               className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
@@ -215,30 +291,46 @@ const JoinLeague: React.FC = () => {
           </div>
         ) : pendingRequest ? (
           <div className="text-center py-6">
-            <h2 className="text-xl font-semibold mb-2">Your request to join is pending</h2>
+            <h2 className="text-xl font-semibold mb-2">
+              Your request to join is pending
+            </h2>
             <p className="text-gray-600 dark:text-gray-400 mb-4">
-              You have already requested to join this league. The league administrator will review your request.
+              Your request has been submitted and is awaiting approval. The league
+              administrator will review your request soon.
             </p>
-            <button
-              onClick={() => navigate(`/leagues/${id}`)}
-              className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-            >
-              Go to League
-            </button>
+            <div className="flex justify-center">
+              <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-md px-4 py-3 flex items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-yellow-500 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+                </svg>
+                <span className="text-yellow-700 dark:text-yellow-400">Request pending approval</span>
+              </div>
+            </div>
+            <div className="mt-4">
+              <Link
+                to={`/leagues/${id}`}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                View League
+              </Link>
+            </div>
           </div>
         ) : (
           <form onSubmit={handleJoinRequest}>
             <h2 className="text-xl font-semibold mb-4">Join Request</h2>
-            
+
             {error && (
               <div className="bg-red-50 border-l-4 border-red-500 p-4 mb-4 dark:bg-red-900/20">
                 <p className="text-red-700 dark:text-red-300">{error}</p>
               </div>
             )}
-            
+
             {league.settings?.allowJoinRequests && (
               <div className="mb-4">
-                <label htmlFor="joinMessage" className="block text-sm font-medium mb-1">
+                <label
+                  htmlFor="joinMessage"
+                  className="block text-sm font-medium mb-1"
+                >
                   Message (Optional)
                 </label>
                 <textarea
@@ -250,13 +342,13 @@ const JoinLeague: React.FC = () => {
                   rows={3}
                 />
                 <p className="mt-1 text-sm text-gray-500">
-                  {league.settings?.allowJoinRequests 
-                    ? "Your request will need to be approved by a league administrator." 
+                  {league.settings?.allowJoinRequests
+                    ? "Your request will need to be approved by a league administrator."
                     : "You will be added to the league immediately."}
                 </p>
               </div>
             )}
-            
+
             <div className="flex justify-between">
               <Link
                 to={`/leagues/${id}`}
@@ -264,7 +356,7 @@ const JoinLeague: React.FC = () => {
               >
                 Cancel
               </Link>
-              
+
               <button
                 type="submit"
                 disabled={submitting}
@@ -274,11 +366,11 @@ const JoinLeague: React.FC = () => {
                     : "bg-green-600 text-white hover:bg-green-700"
                 }`}
               >
-                {submitting 
-                  ? "Processing..." 
-                  : league.settings?.allowJoinRequests 
-                    ? "Request to Join" 
-                    : "Join League"}
+                {submitting
+                  ? "Processing..."
+                  : league.settings?.allowJoinRequests
+                  ? "Submit Request to Join"
+                  : "Join League"}
               </button>
             </div>
           </form>
