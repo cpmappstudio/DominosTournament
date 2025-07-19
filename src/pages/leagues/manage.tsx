@@ -606,22 +606,22 @@ const LeagueManagement: React.FC = () => {
         isDestructive={true}
       />
 
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
         <h1 className="text-2xl font-bold flex items-center">
           <TrophyIcon className="h-8 w-8 mr-2 text-blue-500" />
           Manage League: {league.name}
         </h1>
 
-        <Link to={`/leagues/${id}`} className="text-blue-600 hover:underline">
+        <Link to={`/leagues/${id}`} className="text-blue-600 hover:underline whitespace-nowrap">
           &larr; Back to League
         </Link>
       </div>
 
       {/* Tabs */}
       <div className="bg-white dark:bg-zinc-800 rounded-lg shadow mb-6 ">
-        <div className="flex border-b border-gray-200 dark:border-zinc-700">
+        <div className="flex border-b border-gray-200 dark:border-zinc-700 overflow-x-auto scrollbar-hide">
           <button
-            className={`px-6 py-3 font-medium text-sm border-b-2 ${
+            className={`px-4 sm:px-6 py-3 font-medium text-sm border-b-2 whitespace-nowrap flex-shrink-0 ${
               activeTab === "details"
                 ? "border-blue-500 text-blue-600 dark:text-blue-400"
                 : "border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
@@ -631,7 +631,7 @@ const LeagueManagement: React.FC = () => {
             League Details
           </button>
           <button
-            className={`px-6 py-3 font-medium text-sm border-b-2 ${
+            className={`px-4 sm:px-6 py-3 font-medium text-sm border-b-2 whitespace-nowrap flex-shrink-0 ${
               activeTab === "members"
                 ? "border-blue-500 text-blue-600 dark:text-blue-400"
                 : "border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
@@ -641,7 +641,7 @@ const LeagueManagement: React.FC = () => {
             Members ({members.length})
           </button>
           <button
-            className={`px-6 py-3 font-medium text-sm border-b-2 ${
+            className={`px-4 sm:px-6 py-3 font-medium text-sm border-b-2 whitespace-nowrap flex-shrink-0 ${
               activeTab === "requests"
                 ? "border-blue-500 text-blue-600 dark:text-blue-400"
                 : "border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
@@ -651,7 +651,7 @@ const LeagueManagement: React.FC = () => {
             Join Requests ({joinRequests.length})
           </button>
           <button
-            className={`px-6 py-3 font-medium text-sm border-b-2 ${
+            className={`px-4 sm:px-6 py-3 font-medium text-sm border-b-2 whitespace-nowrap flex-shrink-0 ${
               activeTab === "danger"
                 ? "border-red-500 text-red-600 dark:text-red-400"
                 : "border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
@@ -1008,7 +1008,7 @@ const LeagueManagement: React.FC = () => {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                           {member.role !== "owner" && (
-                            <div className="flex justify-end space-x-2">
+                            <div className="flex flex-col sm:flex-row justify-end gap-1 sm:gap-2">
                               {member.role === "player" && (
                                 <button
                                   onClick={() =>
@@ -1018,7 +1018,7 @@ const LeagueManagement: React.FC = () => {
                                     )
                                   }
                                   disabled={saving}
-                                  className="text-blue-600 hover:text-blue-900 dark:text-blue-400 dark:hover:text-blue-300"
+                                  className="text-blue-600 hover:text-blue-900 dark:text-blue-400 dark:hover:text-blue-300 text-center sm:text-right"
                                 >
                                   Promote
                                 </button>
@@ -1033,7 +1033,7 @@ const LeagueManagement: React.FC = () => {
                                     )
                                   }
                                   disabled={saving}
-                                  className="text-yellow-600 hover:text-yellow-900 dark:text-yellow-400 dark:hover:text-yellow-300"
+                                  className="text-yellow-600 hover:text-yellow-900 dark:text-yellow-400 dark:hover:text-yellow-300 text-center sm:text-right"
                                 >
                                   Demote
                                 </button>
@@ -1047,7 +1047,7 @@ const LeagueManagement: React.FC = () => {
                                   )
                                 }
                                 disabled={saving}
-                                className="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300"
+                                className="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300 text-center sm:text-right"
                               >
                                 Remove
                               </button>
@@ -1086,8 +1086,8 @@ const LeagueManagement: React.FC = () => {
                     key={request.id}
                     className="bg-gray-50 dark:bg-zinc-700 rounded-lg p-4 border border-gray-200 dark:border-zinc-600"
                   >
-                    <div className="flex justify-between items-start">
-                      <div>
+                    <div className="flex flex-col sm:flex-row justify-between items-start gap-4">
+                      <div className="flex-1">
                         <h3 className="text-lg font-medium">
                           {userDisplayNames[request.userId] || request.userId}
                         </h3>
@@ -1103,12 +1103,12 @@ const LeagueManagement: React.FC = () => {
                           </p>
                         )}
                       </div>
-                      <div className="flex space-x-2">
+                      <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
                         <button
                           onClick={() =>
                             handleJoinRequest(request.id, "approved")
                           }
-                          className="px-3 py-1 bg-green-600 text-white text-sm rounded-md hover:bg-green-700"
+                          className="px-3 py-1 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 text-center"
                         >
                           Approve
                         </button>
@@ -1116,7 +1116,7 @@ const LeagueManagement: React.FC = () => {
                           onClick={() =>
                             handleJoinRequest(request.id, "rejected")
                           }
-                          className="px-3 py-1 bg-red-600 text-white text-sm rounded-md hover:bg-red-700"
+                          className="px-3 py-1 bg-red-600 text-white text-sm rounded-md hover:bg-red-700 text-center"
                         >
                           Reject
                         </button>

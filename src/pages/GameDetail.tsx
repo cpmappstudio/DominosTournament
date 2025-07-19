@@ -414,8 +414,8 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
         {/* Participants */}
         <div className="mb-6">
           <h2 className="text-lg font-semibold mb-3">Participants</h2>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="p-3 border border-gray-200 dark:border-zinc-700 rounded-md">
+          <div className="flex flex-col sm:flex-row gap-4">
+            <div className="flex-1 p-3 border border-gray-200 dark:border-zinc-700 rounded-md">
               <div className="flex items-center">
                 {creator?.photoURL ? (
                   <img 
@@ -435,7 +435,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
               </div>
             </div>
             
-            <div className="p-3 border border-gray-200 dark:border-zinc-700 rounded-md">
+            <div className="flex-1 p-3 border border-gray-200 dark:border-zinc-700 rounded-md">
               <div className="flex items-center">
                 {opponent?.photoURL ? (
                   <img 

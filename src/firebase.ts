@@ -1,6 +1,6 @@
 // Firebase configuration and initialization
 import { initializeApp } from "firebase/app";
-import { getAuth, GoogleAuthProvider, User, signInWithPopup } from "firebase/auth";
+import { getAuth, GoogleAuthProvider, User, signInWithPopup, updateProfile } from "firebase/auth";
 import { 
   getFirestore, 
   collection, 
@@ -14,8 +14,18 @@ import {
   where,
   Timestamp,
   serverTimestamp,
-  addDoc
+  addDoc,
+  limit
 } from "firebase/firestore";
+// Firebase Storage imports - COMMENTED OUT until upgrade
+// import { 
+//   getStorage, 
+//   ref, 
+//   uploadBytes, 
+//   getDownloadURL, 
+//   deleteObject 
+// } from "firebase/storage";
+import { Season } from './models/league';
 
 // Firebase configuration
 const firebaseConfig = {
@@ -32,6 +42,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+// const storage = getStorage(app); // COMMENTED OUT until Firebase Storage upgrade
 const googleProvider = new GoogleAuthProvider();
 
 // Collection references
@@ -72,6 +83,7 @@ export interface Game {
   updatedAt: Timestamp;
   completedAt?: Timestamp; // When the game was completed (for ranking timeframes)
   status: GameStatus;
+  leagueId?: string; // Optional: if game is part of a league
   settings: {
     gameMode: GameMode;
     pointsToWin: number;
@@ -198,7 +210,8 @@ export const createGame = async (opponentId: string, settings: {
   pointsToWin: number,
   numberOfPlayers?: number,
   startingPlayer?: string,
-  useBoricuaRules?: boolean
+  useBoricuaRules?: boolean,
+  leagueId?: string
 }): Promise<Game | null> => {
   try {
     if (!auth.currentUser) throw new Error("You must be logged in to create a game");
@@ -221,7 +234,14 @@ export const createGame = async (opponentId: string, settings: {
       createdAt: Timestamp.now(),
       updatedAt: Timestamp.now(),
       status: "invited", // Start as an invitation
-      settings: settings
+      leagueId: settings.leagueId,
+      settings: {
+        gameMode: settings.gameMode,
+        pointsToWin: settings.pointsToWin,
+        numberOfPlayers: settings.numberOfPlayers,
+        startingPlayer: settings.startingPlayer,
+        useBoricuaRules: settings.useBoricuaRules
+      }
     };
     
     const gameRef = await addDoc(gamesCollection, newGame);
@@ -964,5 +984,328 @@ export const updateUsername = async (userId: string, username: string): Promise<
   }
 };
 
+// Get user's leagues for game creation
+export const getUserLeagues = async (): Promise<{id: string, name: string, settings: any}[]> => {
+  try {
+    if (!auth.currentUser) return [];
+    
+    // Get user's league memberships
+    const membershipsQuery = query(
+      collection(db, "leagueMemberships"),
+      where("userId", "==", auth.currentUser.uid),
+      where("status", "==", "active")
+    );
+    
+    const membershipsSnap = await getDocs(membershipsQuery);
+    const leagueIds = membershipsSnap.docs.map(doc => doc.data().leagueId);
+    
+    if (leagueIds.length === 0) return [];
+    
+    // Get league details
+    const leaguesQuery = query(
+      collection(db, "leagues"),
+      where("id", "in", leagueIds),
+      where("status", "==", "active")
+    );
+    
+    const leaguesSnap = await getDocs(leaguesQuery);
+    return leaguesSnap.docs.map(doc => ({
+      id: doc.id,
+      name: doc.data().name,
+      settings: doc.data().settings
+    }));
+  } catch (error) {
+    console.error("Error getting user leagues:", error);
+    return [];
+  }
+};
+
+// Get all active leagues (for game creation dropdown)
+export const getAllActiveLeagues = async (): Promise<{id: string, name: string, settings: any}[]> => {
+  try {
+    const leaguesQuery = query(
+      collection(db, "leagues"),
+      where("status", "==", "active"),
+      orderBy("name", "asc")
+    );
+    
+    const leaguesSnap = await getDocs(leaguesQuery);
+    return leaguesSnap.docs.map(doc => ({
+      id: doc.id,
+      name: doc.data().name,
+      settings: doc.data().settings
+    }));
+  } catch (error) {
+    console.error("Error getting all active leagues:", error);
+    return [];
+  }
+};
+
+// Season functions
+export const getAllSeasons = async (leagueId?: string): Promise<Season[]> => {
+  try {
+    let seasonsQuery;
+    
+    if (leagueId) {
+      // Get seasons for specific league
+      seasonsQuery = query(
+        collection(db, "seasons"),
+        where("leagueId", "==", leagueId),
+        orderBy("startDate", "desc")
+      );
+    } else {
+      // Get global seasons (leagueId is null)
+      seasonsQuery = query(
+        collection(db, "seasons"),
+        where("leagueId", "==", null),
+        orderBy("startDate", "desc")
+      );
+    }
+    
+    const seasonsSnap = await getDocs(seasonsQuery);
+    return seasonsSnap.docs.map(doc => {
+      const data = doc.data() as any;
+      return {
+        id: doc.id,
+        ...data
+      } as Season;
+    });
+  } catch (error) {
+    console.error("Error getting seasons:", error);
+    return [];
+  }
+};
+
+export const getCurrentSeason = async (leagueId?: string): Promise<Season | null> => {
+  try {
+    let seasonQuery;
+    
+    if (leagueId) {
+      // Get current season for specific league
+      seasonQuery = query(
+        collection(db, "seasons"),
+        where("leagueId", "==", leagueId),
+        where("status", "==", "active"),
+        orderBy("startDate", "desc"),
+        limit(1)
+      );
+    } else {
+      // Get current global season
+      seasonQuery = query(
+        collection(db, "seasons"),
+        where("leagueId", "==", null),
+        where("status", "==", "active"),
+        orderBy("startDate", "desc"),
+        limit(1)
+      );
+    }
+    
+    const seasonSnap = await getDocs(seasonQuery);
+    
+    if (!seasonSnap.empty) {
+      const data = seasonSnap.docs[0].data() as any;
+      return {
+        id: seasonSnap.docs[0].id,
+        ...data
+      } as Season;
+    }
+    
+    return null;
+  } catch (error) {
+    console.error("Error getting current season:", error);
+    return null;
+  }
+};
+
+export const getDefaultSeason = async (leagueId?: string): Promise<Season | null> => {
+  try {
+    let seasonQuery;
+    
+    if (leagueId) {
+      // Get default season for specific league
+      seasonQuery = query(
+        collection(db, "seasons"),
+        where("leagueId", "==", leagueId),
+        where("isDefault", "==", true),
+        limit(1)
+      );
+    } else {
+      // Get default global season
+      seasonQuery = query(
+        collection(db, "seasons"),
+        where("leagueId", "==", null),
+        where("isDefault", "==", true),
+        limit(1)
+      );
+    }
+    
+    const seasonSnap = await getDocs(seasonQuery);
+    
+    if (!seasonSnap.empty) {
+      const data = seasonSnap.docs[0].data() as any;
+      return {
+        id: seasonSnap.docs[0].id,
+        ...data
+      } as Season;
+    }
+    
+    return null;
+  } catch (error) {
+    console.error("Error getting default season:", error);
+    return null;
+  }
+};
+
+export const createSeason = async (seasonData: Omit<Season, 'id' | 'stats'>): Promise<string> => {
+  try {
+    const seasonsRef = collection(db, "seasons");
+    const docRef = await addDoc(seasonsRef, {
+      ...seasonData,
+      stats: {
+        totalGames: 0,
+        totalPlayers: 0,
+        completedGames: 0
+      },
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+    
+    return docRef.id;
+  } catch (error) {
+    console.error("Error creating season:", error);
+    throw error;
+  }
+};
+
+export const updateSeasonStatus = async (seasonId: string, status: Season['status']): Promise<void> => {
+  try {
+    const seasonRef = doc(db, "seasons", seasonId);
+    await updateDoc(seasonRef, {
+      status,
+      updatedAt: serverTimestamp()
+    });
+  } catch (error) {
+    console.error("Error updating season status:", error);
+    throw error;
+  }
+};
+
+export const updateSeasonStats = async (seasonId: string, stats: Partial<Season['stats']>): Promise<void> => {
+  try {
+    const seasonRef = doc(db, "seasons", seasonId);
+    const seasonDoc = await getDoc(seasonRef);
+    
+    if (seasonDoc.exists()) {
+      const currentStats = seasonDoc.data().stats || {};
+      await updateDoc(seasonRef, {
+        stats: {
+          ...currentStats,
+          ...stats
+        },
+        updatedAt: serverTimestamp()
+      });
+    }
+  } catch (error) {
+    console.error("Error updating season stats:", error);
+    throw error;
+  }
+};
+
+// Profile image management functions - COMMENTED OUT until Firebase Storage upgrade
+// export const uploadProfileImage = async (file: File, userId: string): Promise<string> => {
+//   try {
+//     // Validate file type
+//     if (!file.type.startsWith('image/')) {
+//       throw new Error('Please select a valid image file');
+//     }
+
+//     // Validate file size (5MB max)
+//     if (file.size > 5 * 1024 * 1024) {
+//       throw new Error('Image size must be less than 5MB');
+//     }
+
+//     // Create a reference to the user's profile image
+//     const imageRef = ref(storage, `profile-images/${userId}`);
+
+//     // Upload the file
+//     const snapshot = await uploadBytes(imageRef, file);
+    
+//     // Get the download URL
+//     const downloadURL = await getDownloadURL(snapshot.ref);
+
+//     // Update user's auth profile
+//     if (auth.currentUser) {
+//       await updateProfile(auth.currentUser, {
+//         photoURL: downloadURL
+//       });
+//     }
+
+//     // Update user document in Firestore
+//     const userRef = doc(db, "users", userId);
+//     await updateDoc(userRef, {
+//       photoURL: downloadURL,
+//       updatedAt: serverTimestamp()
+//     });
+
+//     return downloadURL;
+//   } catch (error: any) {
+//     console.error("Error uploading profile image:", error);
+    
+//     // Provide more specific error messages
+//     if (error.code === 'storage/unauthorized') {
+//       throw new Error('Firebase Storage is not enabled or rules are not configured. Please check Firebase Console.');
+//     } else if (error.code === 'storage/quota-exceeded') {
+//       throw new Error('Storage quota exceeded. Please contact support.');
+//     } else if (error.message && error.message.includes('CORS')) {
+//       throw new Error('Firebase Storage is not properly configured. Please enable Storage in Firebase Console.');
+//     } else {
+//       throw error;
+//     }
+//   }
+// };
+
+// export const deleteProfileImage = async (userId: string): Promise<void> => {
+//   try {
+//     // Create a reference to the user's profile image
+//     const imageRef = ref(storage, `profile-images/${userId}`);
+
+//     // Delete the file from storage
+//     await deleteObject(imageRef);
+
+//     // Update user's auth profile to remove photo
+//     if (auth.currentUser) {
+//       await updateProfile(auth.currentUser, {
+//         photoURL: null
+//       });
+//     }
+
+//     // Update user document in Firestore
+//     const userRef = doc(db, "users", userId);
+//     await updateDoc(userRef, {
+//       photoURL: null,
+//       updatedAt: serverTimestamp()
+//     });
+//   } catch (error) {
+//     // If image doesn't exist, that's okay - just update the profile
+//     if (error instanceof Error && error.message.includes('object-not-found')) {
+//       if (auth.currentUser) {
+//         await updateProfile(auth.currentUser, {
+//           photoURL: null
+//         });
+//       }
+      
+//       const userRef = doc(db, "users", userId);
+//       await updateDoc(userRef, {
+//         photoURL: null,
+//         updatedAt: serverTimestamp()
+//       });
+//     } else {
+//       console.error("Error deleting profile image:", error);
+//       throw error;
+//     }
+//   }
+// };
+
 export { auth, db };
+// export { auth, db, storage }; // COMMENTED OUT until Firebase Storage upgrade
 export default app;

@@ -16,6 +16,36 @@ export type LeagueMemberRole = "player" | "admin" | "judge" | "owner";
 // Types of tournaments/events
 export type TournamentFormat = "round-robin" | "elimination" | "swiss" | "custom";
 
+// Season status
+export type SeasonStatus = "active" | "completed" | "upcoming" | "archived";
+
+// Season interface
+export interface Season {
+  id: string;
+  name: string;
+  description?: string;
+  startDate: Timestamp;
+  endDate: Timestamp;
+  status: SeasonStatus;
+  isDefault: boolean; // Only one season can be default at a time
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  leagueId?: string; // If null, it's a global season
+  
+  // Season-specific settings
+  settings?: {
+    resetRankings: boolean; // Whether to reset rankings at season start
+    carryOverStats: boolean; // Whether to carry over stats from previous season
+  };
+  
+  // Season statistics
+  stats?: {
+    totalGames: number;
+    totalPlayers: number;
+    completedGames: number;
+  };
+}
+
 // Basic league interface
 export interface League {
   id: string;

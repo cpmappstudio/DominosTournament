@@ -11,7 +11,11 @@ import {
   calculateTitle,
   getRankingsByTimePeriod,
   RankingEntry as RankingEntryType,
+  getAllSeasons,
+  getCurrentSeason,
+  getDefaultSeason,
 } from "../../firebase";
+import { Season } from "../../models/league";
 
 // Use the RankingEntry type from firebase.ts
 type RankingEntry = RankingEntryType;
@@ -20,6 +24,7 @@ interface RankingFilter {
   leagueId: string | null;
   timeFrame: "all" | "month" | "week";
   gameMode: "all" | "individual" | "teams";
+  seasonId: string | null;
 }
 
 const Rankings: React.FC = () => {
@@ -30,9 +35,11 @@ const Rankings: React.FC = () => {
     leagueId: null,
     timeFrame: "all",
     gameMode: "all",
+    seasonId: null,
   });
 
   const [leagues, setLeagues] = useState<{ id: string; name: string }[]>([]);
+  const [seasons, setSeasons] = useState<Season[]>([]);
   const [selectedPlayer, setSelectedPlayer] = useState<RankingEntry | null>(
     null,
   );
@@ -42,45 +49,13 @@ const Rankings: React.FC = () => {
     setError(null);
 
     try {
-      // Use the getRankingsByTimePeriod function to get properly filtered data
-      const rankingData = await getRankingsByTimePeriod(filter.timeFrame);
+      let filteredRankings: RankingEntry[] = [];
 
-      // Further filter by game mode if specified
-      let filteredRankings = rankingData;
-
-      if (filter.gameMode !== "all") {
-        // Filter games by mode
-        // This requires looking at each player's game history
-        const db = getFirestore();
-        const oneMonthAgo = new Date();
-        oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-
-        // Get game data for filtering by mode
-        const gamesQuery = query(
-          collection(db, "games"),
-          where("status", "==", "completed"),
-          where("gameMode", "==", filter.gameMode),
-        );
-
-        const gamesSnapshot = await getDocs(gamesQuery);
-        const gamesByMode = new Set<string>();
-
-        gamesSnapshot.forEach((doc) => {
-          const game = doc.data() as { createdBy: string; opponent: string };
-          gamesByMode.add(game.createdBy);
-          gamesByMode.add(game.opponent);
-        });
-
-        // Only include players who have played games in this mode
-        filteredRankings = filteredRankings.filter((player) =>
-          gamesByMode.has(player.userId),
-        );
-      }
-
-      // Filter by league if specified
       if (filter.leagueId) {
-        // Get players from the specified league's memberships
+        // League-specific rankings - calculate from league games only
         const db = getFirestore();
+        
+        // Get all members of the league first
         const memberQuery = query(
           collection(db, "leagueMemberships"),
           where("leagueId", "==", filter.leagueId),
@@ -89,15 +64,341 @@ const Rankings: React.FC = () => {
 
         const memberSnap = await getDocs(memberQuery);
         const leagueUserIds: string[] = [];
-
         memberSnap.forEach((doc) => {
           leagueUserIds.push(doc.data().userId);
         });
 
-        // Only include players who are members of this league
-        filteredRankings = filteredRankings.filter((player) =>
-          leagueUserIds.includes(player.userId),
+        if (leagueUserIds.length === 0) {
+          setRankings([]);
+          return;
+        }
+
+        // Get league games (games with leagueId)
+        let gamesQuery = query(
+          collection(db, "games"),
+          where("leagueId", "==", filter.leagueId),
+          where("status", "==", "completed")
         );
+
+        // Build filter conditions array
+        const conditions = [
+          where("leagueId", "==", filter.leagueId),
+          where("status", "==", "completed")
+        ];
+
+        // Add game mode filter if specified
+        if (filter.gameMode !== "all") {
+          conditions.push(where("settings.gameMode", "==", filter.gameMode));
+        }
+
+        // Add season filter if specified
+        if (filter.seasonId) {
+          const selectedSeason = seasons.find(s => s.id === filter.seasonId);
+          if (selectedSeason) {
+            conditions.push(where("updatedAt", ">=", selectedSeason.startDate));
+            conditions.push(where("updatedAt", "<=", selectedSeason.endDate));
+          }
+        } else if (filter.timeFrame !== "all") {
+          // Add time filter if no season is selected
+          const timeLimit = new Date();
+          if (filter.timeFrame === "week") {
+            timeLimit.setDate(timeLimit.getDate() - 7);
+          } else if (filter.timeFrame === "month") {
+            timeLimit.setMonth(timeLimit.getMonth() - 1);
+          }
+          conditions.push(where("updatedAt", ">=", timeLimit));
+        }
+
+        // Apply all conditions to the query
+        gamesQuery = query(collection(db, "games"), ...conditions);
+
+        const gamesSnapshot = await getDocs(gamesQuery);
+        
+        // Calculate league-specific statistics
+        const playerStats: Record<string, {
+          gamesPlayed: number;
+          gamesWon: number;
+          totalPoints: number;
+          userId: string;
+        }> = {};
+
+        // Initialize stats for all league members
+        leagueUserIds.forEach(userId => {
+          playerStats[userId] = {
+            gamesPlayed: 0,
+            gamesWon: 0,
+            totalPoints: 0,
+            userId
+          };
+        });
+
+        // Process games to calculate stats
+        gamesSnapshot.forEach((doc) => {
+          const game = doc.data() as {
+            createdBy: string;
+            opponent: string;
+            winner?: string;
+            scores?: { creator: number; opponent: number };
+          };
+
+          // Only count if both players are league members
+          if (leagueUserIds.includes(game.createdBy) && leagueUserIds.includes(game.opponent)) {
+            // Update games played
+            playerStats[game.createdBy].gamesPlayed++;
+            playerStats[game.opponent].gamesPlayed++;
+
+            // Update wins and points based on winner
+            if (game.winner === game.createdBy) {
+              playerStats[game.createdBy].gamesWon++;
+              playerStats[game.createdBy].totalPoints += 3; // Points for win
+              playerStats[game.opponent].totalPoints += 0; // Points for loss
+            } else if (game.winner === game.opponent) {
+              playerStats[game.opponent].gamesWon++;
+              playerStats[game.opponent].totalPoints += 3; // Points for win
+              playerStats[game.createdBy].totalPoints += 0; // Points for loss
+            } else {
+              // Draw or no winner - give 1 point each
+              playerStats[game.createdBy].totalPoints += 1;
+              playerStats[game.opponent].totalPoints += 1;
+            }
+          }
+        });
+
+        // Get user display names
+        const userPromises = leagueUserIds.map(async (userId) => {
+          try {
+            const userDoc = await getDocs(query(
+              collection(db, "users"),
+              where("__name__", "==", userId)
+            ));
+            
+            if (!userDoc.empty) {
+              const userData = userDoc.docs[0].data();
+              return {
+                userId,
+                displayName: userData.displayName || userData.username || userId,
+                username: userData.username,
+                photoURL: userData.photoURL
+              };
+            }
+          } catch (error) {
+            console.error(`Error fetching user ${userId}:`, error);
+          }
+          return {
+            userId,
+            displayName: userId,
+            username: userId,
+            photoURL: undefined
+          };
+        });
+
+        const userDetails = await Promise.all(userPromises);
+        const userMap = new Map(userDetails.map(user => [user.userId, user]));
+
+        // Convert to ranking entries and sort
+        filteredRankings = Object.values(playerStats)
+          .filter(stats => stats.gamesPlayed > 0 || leagueUserIds.includes(stats.userId)) // Include all league members
+          .map(stats => {
+            const userDetail = userMap.get(stats.userId);
+            return {
+              userId: stats.userId,
+              displayName: userDetail?.displayName || stats.userId,
+              username: userDetail?.username || stats.userId,
+              photoURL: userDetail?.photoURL,
+              gamesPlayed: stats.gamesPlayed,
+              gamesWon: stats.gamesWon,
+              totalPoints: stats.totalPoints,
+              winRate: stats.gamesPlayed > 0 ? (stats.gamesWon / stats.gamesPlayed) * 100 : 0,
+              rank: 0 // Will be set after sorting
+            } as RankingEntry;
+          })
+          .sort((a, b) => {
+            // Sort by total points first, then by win rate, then by games won
+            if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
+            if (b.winRate !== a.winRate) return b.winRate - a.winRate;
+            return b.gamesWon - a.gamesWon;
+          })
+          .map((player, index) => ({
+            ...player,
+            rank: index + 1
+          }));
+
+      } else {
+        // Global rankings - handle season filtering or time period
+        let timeFrame = filter.timeFrame;
+        
+        // If season is selected, override time frame filtering
+        if (filter.seasonId) {
+          // For global rankings with season, we need to fetch games within season dates
+          const selectedSeason = seasons.find(s => s.id === filter.seasonId);
+          if (selectedSeason) {
+            const db = getFirestore();
+            
+            // Build conditions for global games within season
+            const conditions = [
+              where("status", "==", "completed"),
+              where("updatedAt", ">=", selectedSeason.startDate),
+              where("updatedAt", "<=", selectedSeason.endDate)
+            ];
+
+            // Add game mode filter if specified
+            if (filter.gameMode !== "all") {
+              conditions.push(where("settings.gameMode", "==", filter.gameMode));
+            }
+
+            const gamesQuery = query(collection(db, "games"), ...conditions);
+            const gamesSnapshot = await getDocs(gamesQuery);
+
+            // Calculate rankings from season games
+            const playerStats: Record<string, {
+              gamesPlayed: number;
+              gamesWon: number;
+              totalPoints: number;
+              userId: string;
+            }> = {};
+
+            // Process games to calculate stats
+            gamesSnapshot.forEach((doc) => {
+              const game = doc.data() as {
+                createdBy: string;
+                opponent: string;
+                winner?: string;
+                scores?: { creator: number; opponent: number };
+              };
+
+              // Initialize player stats if not exists
+              if (!playerStats[game.createdBy]) {
+                playerStats[game.createdBy] = {
+                  gamesPlayed: 0,
+                  gamesWon: 0,
+                  totalPoints: 0,
+                  userId: game.createdBy
+                };
+              }
+              if (!playerStats[game.opponent]) {
+                playerStats[game.opponent] = {
+                  gamesPlayed: 0,
+                  gamesWon: 0,
+                  totalPoints: 0,
+                  userId: game.opponent
+                };
+              }
+
+              // Update games played
+              playerStats[game.createdBy].gamesPlayed++;
+              playerStats[game.opponent].gamesPlayed++;
+
+              // Update wins and points based on winner
+              if (game.winner === game.createdBy) {
+                playerStats[game.createdBy].gamesWon++;
+                playerStats[game.createdBy].totalPoints += 3; // Points for win
+                playerStats[game.opponent].totalPoints += 0; // Points for loss
+              } else if (game.winner === game.opponent) {
+                playerStats[game.opponent].gamesWon++;
+                playerStats[game.opponent].totalPoints += 3; // Points for win
+                playerStats[game.createdBy].totalPoints += 0; // Points for loss
+              } else {
+                // Draw or no winner - give 1 point each
+                playerStats[game.createdBy].totalPoints += 1;
+                playerStats[game.opponent].totalPoints += 1;
+              }
+            });
+
+            // Get user display names for global players
+            const userIds = Object.keys(playerStats);
+            const userPromises = userIds.map(async (userId) => {
+              try {
+                const userDoc = await getDocs(query(
+                  collection(db, "users"),
+                  where("__name__", "==", userId)
+                ));
+                
+                if (!userDoc.empty) {
+                  const userData = userDoc.docs[0].data();
+                  return {
+                    userId,
+                    displayName: userData.displayName || userData.username || userId,
+                    username: userData.username,
+                    photoURL: userData.photoURL
+                  };
+                }
+              } catch (error) {
+                console.error(`Error fetching user ${userId}:`, error);
+              }
+              return {
+                userId,
+                displayName: userId,
+                username: userId,
+                photoURL: undefined
+              };
+            });
+
+            const userDetails = await Promise.all(userPromises);
+            const userMap = new Map(userDetails.map(user => [user.userId, user]));
+
+            // Convert to ranking entries and sort
+            filteredRankings = Object.values(playerStats)
+              .filter(stats => stats.gamesPlayed > 0)
+              .map(stats => {
+                const userDetail = userMap.get(stats.userId);
+                return {
+                  userId: stats.userId,
+                  displayName: userDetail?.displayName || stats.userId,
+                  username: userDetail?.username || stats.userId,
+                  photoURL: userDetail?.photoURL,
+                  gamesPlayed: stats.gamesPlayed,
+                  gamesWon: stats.gamesWon,
+                  totalPoints: stats.totalPoints,
+                  winRate: stats.gamesPlayed > 0 ? (stats.gamesWon / stats.gamesPlayed) * 100 : 0,
+                  rank: 0 // Will be set after sorting
+                } as RankingEntry;
+              })
+              .sort((a, b) => {
+                // Sort by total points first, then by win rate, then by games won
+                if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
+                if (b.winRate !== a.winRate) return b.winRate - a.winRate;
+                return b.gamesWon - a.gamesWon;
+              })
+              .map((player, index) => ({
+                ...player,
+                rank: index + 1
+              }));
+          } else {
+            // Season not found, use all time
+            filteredRankings = await getRankingsByTimePeriod("all");
+          }
+        } else {
+          // No season selected, use time frame
+          const rankingData = await getRankingsByTimePeriod(timeFrame);
+          filteredRankings = rankingData;
+        }
+
+        // Further filter by game mode if specified and not already filtered by season
+        if (filter.gameMode !== "all" && !filter.seasonId) {
+          // Filter games by mode
+          const db = getFirestore();
+
+          // Get game data for filtering by mode
+          const gamesQuery = query(
+            collection(db, "games"),
+            where("status", "==", "completed"),
+            where("settings.gameMode", "==", filter.gameMode),
+          );
+
+          const gamesSnapshot = await getDocs(gamesQuery);
+          const gamesByMode = new Set<string>();
+
+          gamesSnapshot.forEach((doc) => {
+            const game = doc.data() as { createdBy: string; opponent: string };
+            gamesByMode.add(game.createdBy);
+            gamesByMode.add(game.opponent);
+          });
+
+          // Only include players who have played games in this mode
+          filteredRankings = filteredRankings.filter((player) =>
+            gamesByMode.has(player.userId),
+          );
+        }
       }
 
       setRankings(filteredRankings);
@@ -107,7 +408,7 @@ const Rankings: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [filter]);
+  }, [filter, seasons]); // Add seasons dependency to re-fetch when seasons load
 
   useEffect(() => {
     fetchRankings();
@@ -139,8 +440,22 @@ const Rankings: React.FC = () => {
       }
     };
 
+    const fetchSeasons = async () => {
+      try {
+        // Load seasons based on current league filter
+        const seasonsList = await getAllSeasons(filter.leagueId || undefined);
+        setSeasons(seasonsList);
+        
+        // Only auto-select season if there are seasons and user hasn't manually selected one
+        // Don't auto-select to allow viewing all-time rankings by default
+      } catch (err) {
+        console.error("Error fetching seasons:", err);
+      }
+    };
+
     fetchLeagues();
-  }, []);
+    fetchSeasons();
+  }, [filter.leagueId]); // Re-fetch seasons when league changes
 
   const handleFilterChange = (
     filterKey: keyof RankingFilter,
@@ -163,10 +478,10 @@ const Rankings: React.FC = () => {
     setSelectedPlayer(null);
   };
 
-  // Find the current user in the rankings
-  const currentUserRanking = rankings.find(
-    (player) => player.userId === auth.currentUser?.uid,
-  );
+  // Find the current user in the rankings (only if logged in)
+  const currentUserRanking = auth.currentUser 
+    ? rankings.find((player) => player.userId === auth.currentUser?.uid)
+    : null;
 
   return (
     <div className="p-6 max-w-6xl mx-auto text-white">
@@ -175,8 +490,12 @@ const Rankings: React.FC = () => {
           <h1 className="text-3xl font-bold">Player Rankings</h1>
           {filter.leagueId && (
             <div className="text-lg text-gray-600 dark:text-gray-400 mt-1">
-              {leagues.find((league) => league.id === filter.leagueId)?.name ||
-                "League Rankings"}
+              {leagues.find((league) => league.id === filter.leagueId)?.name || "League Rankings"} - Liga Específica
+            </div>
+          )}
+          {!filter.leagueId && (
+            <div className="text-lg text-gray-600 dark:text-gray-400 mt-1">
+              Rankings Globales
             </div>
           )}
         </div>
@@ -206,7 +525,19 @@ const Rankings: React.FC = () => {
               </button>
             </span>
           )}
-          {filter.timeFrame !== "all" && (
+          {filter.seasonId && (
+            <span className="bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-200 text-sm px-3 py-1 rounded-full flex items-center">
+              Season:{" "}
+              {seasons.find((season) => season.id === filter.seasonId)?.name}
+              <button
+                onClick={() => handleFilterChange("seasonId", null)}
+                className="ml-2 text-orange-700 dark:text-orange-300 hover:text-orange-900 dark:hover:text-orange-100"
+              >
+                ×
+              </button>
+            </span>
+          )}
+          {filter.timeFrame !== "all" && !filter.seasonId && (
             <span className="bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200 text-sm px-3 py-1 rounded-full flex items-center">
               Time: {filter.timeFrame === "week" ? "Past Week" : "Past Month"}
               <button
@@ -229,7 +560,7 @@ const Rankings: React.FC = () => {
             </span>
           )}
         </div>
-        <div className="p-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="p-6 grid grid-cols-1 md:grid-cols-4 gap-4">
           {/* League Filter */}
           <div>
             <label className="block text-sm font-medium mb-1">League</label>
@@ -256,16 +587,47 @@ const Rankings: React.FC = () => {
             </select>
           </div>
 
+          {/* Season Filter */}
+          <div>
+            <label className="block text-sm font-medium mb-1">Season</label>
+            <select
+              value={filter.seasonId || "all"}
+              onChange={(e) =>
+                handleFilterChange(
+                  "seasonId",
+                  e.target.value === "all" ? null : e.target.value,
+                )
+              }
+              className={`w-full p-2 border rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:border-zinc-600 ${
+                filter.seasonId
+                  ? "border-orange-500 bg-orange-50 dark:bg-orange-900/10"
+                  : "border-gray-300 dark:bg-zinc-700"
+              }`}
+            >
+              <option value="all">All Seasons</option>
+              {seasons.map((season) => (
+                <option key={season.id} value={season.id}>
+                  {season.name} {season.status === "active" ? "(Active)" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+
           {/* Time Frame Filter */}
           <div>
-            <label className="block text-sm font-medium mb-1">Time Frame</label>
+            <label className="block text-sm font-medium mb-1">
+              Time Frame {filter.seasonId ? "(Disabled)" : ""}
+            </label>
             <select
               value={filter.timeFrame}
               onChange={(e) => handleFilterChange("timeFrame", e.target.value)}
+              disabled={!!filter.seasonId}
               className={`w-full p-2 border rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:border-zinc-600 ${
-                filter.timeFrame !== "all"
-                  ? "border-green-500 bg-green-50 dark:bg-green-900/10"
-                  : "border-gray-300 dark:bg-zinc-700"
+                filter.seasonId 
+                  ? "opacity-50 cursor-not-allowed bg-gray-100 dark:bg-zinc-800"
+                  : filter.timeFrame !== "all"
+                    ? "border-green-500 bg-green-50 dark:bg-green-900/10"
+                    : "border-gray-300 dark:bg-zinc-700"
               }`}
             >
               <option value="all">All Time</option>
@@ -297,7 +659,8 @@ const Rankings: React.FC = () => {
       {/* Active Filters Summary */}
       {(filter.leagueId !== null ||
         filter.timeFrame !== "all" ||
-        filter.gameMode !== "all") && (
+        filter.gameMode !== "all" ||
+        filter.seasonId !== null) && (
         <div className="bg-gray-50 dark:bg-zinc-800/50 border border-gray-200 dark:border-zinc-700 rounded-lg p-4 mb-6">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Current View</h2>
@@ -307,6 +670,7 @@ const Rankings: React.FC = () => {
                   leagueId: null,
                   timeFrame: "all",
                   gameMode: "all",
+                  seasonId: null,
                 });
               }}
               className="text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"
@@ -316,14 +680,20 @@ const Rankings: React.FC = () => {
           </div>
 
           <div className="mt-2 text-gray-700 dark:text-gray-300">
-            {filter.timeFrame !== "all" && (
+            {filter.seasonId && (
               <span className="font-medium">
+                Season: {seasons.find((season) => season.id === filter.seasonId)?.name || "Selected Season"}
+              </span>
+            )}
+            {filter.timeFrame !== "all" && !filter.seasonId && (
+              <span className="font-medium">
+                {filter.seasonId ? " • " : ""}
                 {filter.timeFrame === "week" ? "Past Week" : "Past Month"}
               </span>
             )}
             {filter.gameMode !== "all" && (
               <span>
-                {filter.timeFrame !== "all" ? " • " : ""}
+                {(filter.timeFrame !== "all" && !filter.seasonId) || filter.seasonId ? " • " : ""}
                 <span className="font-medium">
                   {filter.gameMode === "teams"
                     ? "Teams Mode"
@@ -333,7 +703,7 @@ const Rankings: React.FC = () => {
             )}
             {filter.leagueId && (
               <span>
-                {filter.timeFrame !== "all" || filter.gameMode !== "all"
+                {((filter.timeFrame !== "all" && !filter.seasonId) || filter.gameMode !== "all" || filter.seasonId)
                   ? " • "
                   : ""}
                 <span className="font-medium">
@@ -346,10 +716,15 @@ const Rankings: React.FC = () => {
         </div>
       )}
 
-      {/* Current User's Ranking */}
-      {currentUserRanking && (
+      {/* Current User's Ranking - Only show if user is logged in */}
+      {auth.currentUser && currentUserRanking && (
         <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900 rounded-lg p-4 mb-6">
-          <h2 className="text-lg font-semibold mb-2">Your Ranking</h2>
+          <h2 className="text-lg font-semibold mb-2">
+            {filter.leagueId 
+              ? `Tu Ranking en ${leagues.find((league) => league.id === filter.leagueId)?.name || "Liga"}`
+              : "Your Global Ranking"
+            }
+          </h2>
           <div className="flex items-center">
             <div className="flex-shrink-0 mr-4">
               <div className="bg-blue-600 text-white w-10 h-10 rounded-full flex items-center justify-center font-bold">
@@ -389,7 +764,7 @@ const Rankings: React.FC = () => {
               </div>
               <div>
                 <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Total Points
+                  {filter.leagueId ? "Puntos Liga" : "Total Points"}
                 </p>
                 <p className="font-medium">{currentUserRanking.totalPoints}</p>
               </div>
@@ -479,7 +854,7 @@ const Rankings: React.FC = () => {
                     Win Rate
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-zinc-300 uppercase tracking-wider">
-                    Total Points
+                    {filter.leagueId ? "Puntos Liga" : "Total Points"}
                   </th>
                 </tr>
               </thead>
@@ -488,7 +863,7 @@ const Rankings: React.FC = () => {
                   <tr
                     key={player.userId}
                     className={`hover:bg-gray-50 dark:hover:bg-zinc-700 cursor-pointer ${
-                      player.userId === auth.currentUser?.uid
+                      auth.currentUser && player.userId === auth.currentUser?.uid
                         ? "bg-blue-50 dark:bg-blue-900/10"
                         : ""
                     }`}
@@ -661,14 +1036,19 @@ const Rankings: React.FC = () => {
 
             <div className="bg-gray-100 dark:bg-zinc-700 p-4 rounded-lg mb-6">
               <p className="text-sm text-gray-500 dark:text-gray-400">
-                Total Points
+                {filter.leagueId ? "Puntos Liga" : "Total Points"}
               </p>
               <p className="text-2xl font-bold">{selectedPlayer.totalPoints}</p>
             </div>
 
             {/* Future: Add match history, leagues, etc. */}
             <p className="text-gray-500 text-sm">
-              League support and detailed player statistics coming soon.
+              {filter.leagueId 
+                ? `League-specific statistics for ${leagues.find((league) => league.id === filter.leagueId)?.name || "this league"}.`
+                : auth.currentUser 
+                  ? "League support and detailed player statistics coming soon."
+                  : "Sign in to view detailed statistics and join leagues."
+              }
             </p>
           </div>
         </div>

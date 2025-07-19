@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { auth, createGame, searchUsers, isPlayerInActiveGame, GameMode, UserProfile } from "../firebase";
+import { auth, createGame, searchUsers, isPlayerInActiveGame, GameMode, UserProfile, getAllActiveLeagues } from "../firebase";
 import { ArrowLeftIcon, InformationCircleIcon, ExclamationTriangleIcon, XMarkIcon, UserPlusIcon } from "@heroicons/react/24/solid";
+import { Select } from "../components/select";
+import { getFirestore, collection, query, where, getDocs } from "firebase/firestore";
 
 const CreateGame: React.FC = () => {
   const navigate = useNavigate();
@@ -12,8 +14,14 @@ const CreateGame: React.FC = () => {
     pointsToWin: 100,
     numberOfPlayers: 2,
     startingPlayer: "creator", // creator, opponent, or random
-    useBoricuaRules: true
+    useBoricuaRules: true,
+    selectedLeague: "" // New field for selected league
   });
+  
+  // League state
+  const [availableLeagues, setAvailableLeagues] = useState<{id: string, name: string, settings: any}[]>([]);
+  const [loadingLeagues, setLoadingLeagues] = useState(true);
+  const [leagueSettingsApplied, setLeagueSettingsApplied] = useState(false);
   
   // Selected opponents with full profile data
   const [selectedOpponents, setSelectedOpponents] = useState<UserProfile[]>([]);
@@ -39,6 +47,41 @@ const CreateGame: React.FC = () => {
       return gameConfig.numberOfPlayers - 1;
     }
   };
+  
+  // Load all active leagues on component mount
+  useEffect(() => {
+    const loadActiveLeagues = async () => {
+      try {
+        const leagues = await getAllActiveLeagues();
+        setAvailableLeagues(leagues);
+      } catch (error) {
+        console.error('Error loading active leagues:', error);
+      } finally {
+        setLoadingLeagues(false);
+      }
+    };
+
+    loadActiveLeagues();
+  }, []);
+
+  // Apply league settings when a league is selected
+  useEffect(() => {
+    const selectedLeague = availableLeagues.find(league => league.id === gameConfig.selectedLeague);
+    if (selectedLeague && selectedLeague.settings) {
+      setGameConfig(prev => ({
+        ...prev,
+        pointsToWin: selectedLeague.settings.pointsToWin || prev.pointsToWin,
+        useBoricuaRules: selectedLeague.settings.useBoricuaRules ?? prev.useBoricuaRules
+      }));
+      setLeagueSettingsApplied(true);
+    } else {
+      setLeagueSettingsApplied(false);
+    }
+    
+    // Clear search results when league changes to avoid showing incorrect results
+    setSearchResults([]);
+    setSearchTerm("");
+  }, [gameConfig.selectedLeague, availableLeagues]);
   
   // Check if user is already in an active game
   useEffect(() => {
@@ -73,13 +116,48 @@ const CreateGame: React.FC = () => {
       
       setIsSearching(true);
       try {
-        const results = await searchUsers(searchTerm);
+        let results: UserProfile[] = [];
+        
+        if (gameConfig.selectedLeague) {
+          // League-specific search: only search among league members
+          const db = getFirestore();
+          
+          // First, get all active members of the selected league
+          const memberQuery = query(
+            collection(db, "leagueMemberships"),
+            where("leagueId", "==", gameConfig.selectedLeague),
+            where("status", "==", "active")
+          );
+          
+          const memberSnap = await getDocs(memberQuery);
+          const leagueUserIds: string[] = [];
+          
+          memberSnap.forEach((doc) => {
+            leagueUserIds.push(doc.data().userId);
+          });
+          
+          // If no members found, return empty results
+          if (leagueUserIds.length === 0) {
+            setSearchResults([]);
+            setIsSearching(false);
+            return;
+          }
+          
+          // Now search for users, but only include league members
+          const allResults = await searchUsers(searchTerm);
+          results = allResults.filter(user => leagueUserIds.includes(user.uid));
+        } else {
+          // Global search: search all users
+          results = await searchUsers(searchTerm);
+        }
+        
         // Filter out already selected opponents and current user
         const filteredResults = results.filter(user => {
           const isCurrentUser = auth.currentUser && user.uid === auth.currentUser.uid;
           const isAlreadySelected = selectedOpponents.some(opponent => opponent.uid === user.uid);
           return !isCurrentUser && !isAlreadySelected;
         });
+        
         setSearchResults(filteredResults);
       } catch (error) {
         console.error("Error searching opponents:", error);
@@ -90,7 +168,7 @@ const CreateGame: React.FC = () => {
     
     const debounce = setTimeout(searchOpponents, 500);
     return () => clearTimeout(debounce);
-  }, [searchTerm, selectedOpponents]);
+  }, [searchTerm, selectedOpponents, gameConfig.selectedLeague]);
   
   // Handle form field changes
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -191,7 +269,8 @@ const CreateGame: React.FC = () => {
         pointsToWin: parseInt(gameConfig.pointsToWin.toString()),
         numberOfPlayers: gameConfig.numberOfPlayers,
         startingPlayer: gameConfig.startingPlayer,
-        useBoricuaRules: gameConfig.useBoricuaRules
+        useBoricuaRules: gameConfig.useBoricuaRules,
+        leagueId: gameConfig.selectedLeague || undefined
       });
       
       if (game && game.id) {
@@ -257,6 +336,33 @@ const CreateGame: React.FC = () => {
         <form onSubmit={handleSubmit} className={isInActiveGame ? 'opacity-50 pointer-events-none' : ''}>
           {activeStep === 1 ? (
             <>
+              {/* League Selection */}
+              <div className="mb-6">
+                <label className="block text-sm font-medium mb-2">
+                  Liga (Opcional)
+                </label>
+                {loadingLeagues ? (
+                  <div className="w-full h-10 bg-gray-200 dark:bg-zinc-700 rounded-lg animate-pulse" />
+                ) : (
+                  <Select
+                    value={gameConfig.selectedLeague}
+                    onChange={(e) => setGameConfig(prev => ({ ...prev, selectedLeague: e.target.value }))}
+                  >
+                    <option value="">Sin liga - Juego global</option>
+                    {availableLeagues.map(league => (
+                      <option key={league.id} value={league.id}>
+                        {league.name}
+                      </option>
+                    ))}
+                  </Select>
+                )}
+                {gameConfig.selectedLeague && leagueSettingsApplied && (
+                  <p className="mt-2 text-sm text-blue-600 dark:text-blue-400">
+                    ✓ Configuración de la liga aplicada automáticamente
+                  </p>
+                )}
+              </div>
+              
               {/* Game Type Selection */}
               <div className="mb-6">
                 <label className="block text-sm font-medium mb-2">Game Mode</label>
@@ -374,12 +480,20 @@ const CreateGame: React.FC = () => {
               
               {/* Points to Win */}
               <div className="mb-6">
-                <label className="block text-sm font-medium mb-2">Points to Win</label>
+                <label className="block text-sm font-medium mb-2">
+                  Points to Win
+                  {leagueSettingsApplied && (
+                    <span className="ml-2 text-xs text-blue-600 dark:text-blue-400">(Liga configuración)</span>
+                  )}
+                </label>
                 <select
                   name="pointsToWin"
                   value={gameConfig.pointsToWin}
                   onChange={handleChange}
-                  className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-700 dark:border-zinc-600"
+                  disabled={leagueSettingsApplied}
+                  className={`w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-700 dark:border-zinc-600 ${
+                    leagueSettingsApplied ? 'opacity-50 cursor-not-allowed' : ''
+                  }`}
                 >
                   <option value={100}>100 points (short game)</option>
                   <option value={150}>150 points (standard match)</option>
@@ -404,14 +518,20 @@ const CreateGame: React.FC = () => {
               
               {/* Rules Variant */}
               <div className="mb-6">
-                <label className="flex items-center space-x-2">
+                <label className={`flex items-center space-x-2 ${leagueSettingsApplied ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
                   <input
                     type="checkbox"
                     checked={gameConfig.useBoricuaRules}
                     onChange={(e) => handleOptionChange("useBoricuaRules", e.target.checked)}
+                    disabled={leagueSettingsApplied}
                     className="h-4 w-4 text-blue-600"
                   />
-                  <span className="text-sm font-medium">Use Boricua (Puerto Rican) Rules</span>
+                  <span className="text-sm font-medium">
+                    Use Boricua (Puerto Rican) Rules
+                    {leagueSettingsApplied && (
+                      <span className="ml-2 text-xs text-blue-600 dark:text-blue-400">(Liga configuración)</span>
+                    )}
+                  </span>
                 </label>
                 <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-md text-sm flex items-start">
                   <InformationCircleIcon className="h-5 w-5 text-blue-600 mr-2 flex-shrink-0 mt-0.5" />
@@ -446,6 +566,21 @@ const CreateGame: React.FC = () => {
                     ({selectedOpponents.length} of {getMaxOpponents()} selected)
                   </span>
                 </label>
+                
+                {/* League search indicator */}
+                {gameConfig.selectedLeague && (
+                  <div className="mb-2 p-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900 rounded-md">
+                    <div className="flex items-center text-sm text-blue-700 dark:text-blue-300">
+                      <InformationCircleIcon className="h-4 w-4 mr-1" />
+                      <span>
+                        Búsqueda limitada a miembros de: {
+                          availableLeagues.find(league => league.id === gameConfig.selectedLeague)?.name || "Liga seleccionada"
+                        }
+                      </span>
+                    </div>
+                  </div>
+                )}
+                
                 <div className="relative">
                   <input
                     type="text"
@@ -453,7 +588,11 @@ const CreateGame: React.FC = () => {
                     onChange={(e) => setSearchTerm(e.target.value)}
                     onFocus={() => setInputFocused(true)}
                     onBlur={() => setTimeout(() => setInputFocused(false), 200)}
-                    placeholder="Search by username or name (min 3 characters)"
+                    placeholder={
+                      gameConfig.selectedLeague 
+                        ? `Search league members (min 3 characters)` 
+                        : "Search by username or name (min 3 characters)"
+                    }
                     className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-700 dark:border-zinc-600"
                   />
                   
@@ -466,7 +605,12 @@ const CreateGame: React.FC = () => {
                         </div>
                       ) : searchResults.length === 0 ? (
                         <div className="p-3 text-center">
-                          <span>No users found</span>
+                          <span>
+                            {gameConfig.selectedLeague 
+                              ? "No league members found with that name" 
+                              : "No users found"
+                            }
+                          </span>
                         </div>
                       ) : (
                         <ul>
