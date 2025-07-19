@@ -232,7 +232,7 @@ const AppContent: React.FC<{
           <SidebarHeader>
             <Dropdown>
               <SidebarItem href="/" className="lg:mb-2.5">
-                <Avatar src="/usa-federation.jpg" />
+                <Avatar src="/usa-federation.png" square className="w-32 h-32" />
                 <SidebarLabel>USA Domino</SidebarLabel>
               </SidebarItem>
             </Dropdown>

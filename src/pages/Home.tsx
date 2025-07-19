@@ -53,12 +53,12 @@ const Home: React.FC = () => {
       <div className="text-center mb-10">
         <div className="flex justify-center mb-6">
           <img
-            src="/usa-federation.jpg"
+            src="/usa-federation-long.png"
             alt="USA Domino Federation"
-            className="w-24 h-24 rounded-full border-4 border-white shadow-lg"
+            className="w-48 h-48"
           />
         </div>
-        <h1 className="text-4xl font-bold mb-3">USA Domino Federation</h1>
+        <h1 className="text-4xl font-bold collapse">USA Domino Federation</h1>
         <p className="text-xl text-zinc-600 dark:text-zinc-300 max-w-2xl mx-auto">
           Experience the authentic Puerto Rican style domino game with friends
           and competitors

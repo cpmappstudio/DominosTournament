@@ -42,6 +42,51 @@ const LeagueDetail: React.FC = () => {
   >({});
   const [fetchingUserData, setFetchingUserData] = useState(false);
 
+  // Helper function to fetch user display names
+  const fetchUserDisplayNames = async (userIds: string[]) => {
+    const db = getFirestore();
+    const newUserNames: Record<string, string> = { ...userDisplayNames };
+    
+    // Only fetch names for users we don't already have
+    const missingUserIds = userIds.filter(id => !newUserNames[id]);
+    
+    if (missingUserIds.length === 0) return;
+
+    try {
+      const userPromises = missingUserIds.map(async (userId) => {
+        try {
+          const userDoc = await getDoc(firestoreDoc(db, "users", userId));
+          if (userDoc.exists()) {
+            const userData = userDoc.data();
+            return {
+              userId,
+              displayName: userData.displayName || userData.username || userId,
+              isJudge: isJudge(userData.email || "")
+            };
+          }
+        } catch (error) {
+          console.error(`Error fetching user data for ${userId}:`, error);
+        }
+        return {
+          userId,
+          displayName: userId,
+          isJudge: false
+        };
+      });
+
+      const userResults = await Promise.all(userPromises);
+      
+      // Update display names (including judges for games display)
+      userResults.forEach((result) => {
+        newUserNames[result.userId] = result.displayName;
+      });
+      
+      setUserDisplayNames(newUserNames);
+    } catch (error) {
+      console.error("Error fetching user display names:", error);
+    }
+  };
+
   // Check user permissions for managing the league
   const canManage = league
     ? canManageLeague(auth.currentUser, league.createdBy)
@@ -275,11 +320,19 @@ const LeagueDetail: React.FC = () => {
 
     const unsubLeagueGames = onSnapshot(leagueGamesQuery, (gamesSnap) => {
       const leagueGamesData: LeagueGame[] = [];
+      const gameUserIds = new Set<string>();
+      
       gamesSnap.forEach((docSnapshot) => {
-        leagueGamesData.push({
+        const gameData = {
           id: docSnapshot.id,
           ...docSnapshot.data(),
-        } as LeagueGame);
+        } as LeagueGame;
+        
+        leagueGamesData.push(gameData);
+        
+        // Collect user IDs from this game
+        if (gameData.createdBy) gameUserIds.add(gameData.createdBy);
+        if (gameData.opponent) gameUserIds.add(gameData.opponent);
       });
       
       // Update games with league games data
@@ -287,14 +340,21 @@ const LeagueDetail: React.FC = () => {
         const regularGames = prevGames.filter(game => !game.id.startsWith('league_'));
         return [...regularGames, ...leagueGamesData];
       });
+
+      // Fetch display names for all game participants
+      if (gameUserIds.size > 0) {
+        fetchUserDisplayNames(Array.from(gameUserIds));
+      }
     });
 
     const unsubRegularGames = onSnapshot(regularGamesQuery, (gamesSnap) => {
       const regularGamesData: LeagueGame[] = [];
+      const gameUserIds = new Set<string>();
+      
       gamesSnap.forEach((docSnapshot) => {
         const gameData = docSnapshot.data();
         // Convert regular game format to league game format
-        regularGamesData.push({
+        const convertedGame = {
           id: `regular_${docSnapshot.id}`,
           leagueId: id!,
           createdBy: gameData.createdBy,
@@ -304,7 +364,13 @@ const LeagueDetail: React.FC = () => {
           updatedAt: gameData.updatedAt,
           scores: gameData.scores,
           winner: gameData.winner
-        } as LeagueGame);
+        } as LeagueGame;
+        
+        regularGamesData.push(convertedGame);
+        
+        // Collect user IDs from this game
+        if (gameData.createdBy) gameUserIds.add(gameData.createdBy);
+        if (gameData.opponent) gameUserIds.add(gameData.opponent);
       });
       
       // Update games with regular games data
@@ -312,6 +378,11 @@ const LeagueDetail: React.FC = () => {
         const leagueGames = prevGames.filter(game => game.id.startsWith('league_'));
         return [...leagueGames, ...regularGamesData];
       });
+
+      // Fetch display names for all game participants
+      if (gameUserIds.size > 0) {
+        fetchUserDisplayNames(Array.from(gameUserIds));
+      }
     });
 
     // Clean up listeners on unmount
@@ -841,14 +912,7 @@ const LeagueDetail: React.FC = () => {
           <div>
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-3">
               <h2 className="text-xl font-semibold">League Games</h2>
-              {userMembership &&
-                league.status &&
-                league.status === "active" && (
-                  <button className="px-3 py-1 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 flex items-center justify-center sm:justify-start w-full sm:w-auto">
-                    <PlusIcon className="h-4 w-4 mr-1" />
-                    Create League Game
-                  </button>
-                )}
+              
             </div>
 
             {games.length === 0 ? (
