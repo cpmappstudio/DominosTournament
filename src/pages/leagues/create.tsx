@@ -108,7 +108,7 @@ const CreateLeague: React.FC = () => {
         },
         // Statistics
         stats: {
-          totalMembers: 1, // Starting with the creator
+          totalMembers: isJudge(auth.currentUser) ? 0 : 1, // Judges don't count as members
           totalMatches: 0,
           totalMatchesCompleted: 0,
           activeMatches: 0,
@@ -117,26 +117,30 @@ const CreateLeague: React.FC = () => {
         },
       };
       const docRef = await addDoc(leaguesRef, leagueData);
-      // Automatically make the creator a member with admin role
-      const membershipsRef = collection(db, "leagueMemberships");
-      await addDoc(membershipsRef, {
-        leagueId: docRef.id,
-        userId: auth.currentUser?.uid || "",
-        joinedAt: serverTimestamp(),
-        status: "active",
-        role: "owner",
-        stats: {
-          gamesPlayed: 0,
-          gamesWon: 0,
-          totalPoints: 0,
-          winRate: 0,
-          rank: 1, // First member is rank 1
-          currentStreak: 0,
-          longestWinStreak: 0,
-          maxWinStreak: 0,
-          partnerIds: [],
-        },
-      });
+      
+      // Only add creator as member if they are not a judge
+      if (!isJudge(auth.currentUser)) {
+        // Automatically make the creator a member with admin role
+        const membershipsRef = collection(db, "leagueMemberships");
+        await addDoc(membershipsRef, {
+          leagueId: docRef.id,
+          userId: auth.currentUser?.uid || "",
+          joinedAt: serverTimestamp(),
+          status: "active",
+          role: "owner",
+          stats: {
+            gamesPlayed: 0,
+            gamesWon: 0,
+            totalPoints: 0,
+            winRate: 0,
+            rank: 1, // First member is rank 1
+            currentStreak: 0,
+            longestWinStreak: 0,
+            maxWinStreak: 0,
+            partnerIds: [],
+          },
+        });
+      }
       // Redirect to the new league page
       navigate(`/leagues/${docRef.id}`);
     } catch (err) {

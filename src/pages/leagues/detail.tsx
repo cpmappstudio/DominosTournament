@@ -11,7 +11,7 @@ import {
   onSnapshot,
 } from "firebase/firestore";
 import { auth } from "../../firebase";
-import { canManageLeague } from "../../utils/auth";
+import { canManageLeague, isJudge } from "../../utils/auth";
 import {
   TrophyIcon,
   UserGroupIcon,
@@ -113,75 +113,73 @@ const LeagueDetail: React.FC = () => {
       const membersData: LeagueMember[] = [];
       const userIds: string[] = [];
 
+      // First, collect all member data
+      const allMembersData: (LeagueMember & { displayName: string })[] = [];
+      
       membersSnap.forEach((docSnapshot) => {
         const memberData = {
           id: docSnapshot.id,
           ...docSnapshot.data(),
           displayName: "",
         } as LeagueMember & { displayName: string };
-        membersData.push(memberData);
+        allMembersData.push(memberData);
         userIds.push(memberData.userId);
-
-        // Use cached display name if available
-        if (userDisplayNames[memberData.userId]) {
-          memberData.displayName = userDisplayNames[memberData.userId];
-        } else {
-          memberData.displayName = memberData.userId; // Default to userId initially
-        }
       });
 
-      // Set members immediately with initial data
-      setMembers(membersData);
-
-      // Find users we need to fetch data for (use local cache to prevent re-renders)
-      const existingUserNames = { ...userDisplayNames };
-      const missingUserIds = userIds.filter(
-        (userId) => !existingUserNames[userId],
-      );
-
-      // Only fetch if we have missing users and aren't already fetching
-      if (missingUserIds.length > 0 && !fetchingUserData) {
-        setFetchingUserData(true);
-
+      // Fetch user data to check for judges and get display names
+      const userDataPromises = userIds.map(async (userId) => {
         try {
-          const userPromises: Promise<void>[] = [];
-          const newUserNames: Record<string, string> = { ...existingUserNames };
-
-          // Create a promise for each user
-          missingUserIds.forEach((userId) => {
-            const userPromise = getDoc(firestoreDoc(db, "users", userId))
-              .then((userDoc) => {
-                if (userDoc.exists()) {
-                  const userData = userDoc.data();
-                  newUserNames[userId] =
-                    userData.displayName || userData.username || userId;
-                } else {
-                  newUserNames[userId] = userId;
-                }
-              })
-              .catch(() => {
-                newUserNames[userId] = userId;
-              });
-
-            userPromises.push(userPromise);
-          });
-
-          // Wait for all promises to resolve
-          await Promise.all(userPromises);
-
-          // Update the state once
-          setUserDisplayNames(newUserNames);
-
-          // Update members with display names
-          const updatedMembers = membersData.map((member) => ({
-            ...member,
-            displayName: newUserNames[member.userId] || member.userId,
-          }));
-
-          setMembers(updatedMembers);
-        } finally {
-          setFetchingUserData(false);
+          const userDoc = await getDoc(firestoreDoc(db, "users", userId));
+          if (userDoc.exists()) {
+            const userData = userDoc.data();
+            return {
+              userId,
+              userData,
+              isJudgeUser: isJudge(userData.email || ""),
+              displayName: userData.displayName || userData.username || userId
+            };
+          }
+        } catch (error) {
+          console.error(`Error fetching user data for ${userId}:`, error);
         }
+        return {
+          userId,
+          userData: null,
+          isJudgeUser: false,
+          displayName: userId
+        };
+      });
+
+      try {
+        const userDataResults = await Promise.all(userDataPromises);
+        const userDataMap = new Map(userDataResults.map(result => [result.userId, result]));
+        
+        // Filter out judges/administrators and prepare final member list
+        allMembersData.forEach((member) => {
+          const userResult = userDataMap.get(member.userId);
+          
+          // Only include non-judge members
+          if (userResult && !userResult.isJudgeUser) {
+            member.displayName = userResult.displayName;
+            membersData.push(member);
+          }
+        });
+
+        // Update display names state for non-judge users only
+        const newUserNames: Record<string, string> = { ...userDisplayNames };
+        userDataResults.forEach((result) => {
+          if (!result.isJudgeUser) {
+            newUserNames[result.userId] = result.displayName;
+          }
+        });
+        
+        setUserDisplayNames(newUserNames);
+        setMembers(membersData);
+        
+      } catch (error) {
+        console.error("Error processing member data:", error);
+        // Fallback: set members without filtering if there's an error
+        setMembers(allMembersData);
       }
     });
 
@@ -288,7 +286,7 @@ const LeagueDetail: React.FC = () => {
           <div className="flex flex-wrap gap-4 text-sm text-gray-600 dark:text-gray-400">
             <div className="flex items-center">
               <UserGroupIcon className="h-5 w-5 mr-1" />
-              <span>{league.stats?.totalMembers || 0} members</span>
+              <span>{members.length} members</span>
             </div>
             <div className="flex items-center">
               <CalendarIcon className="h-5 w-5 mr-1" />
@@ -476,7 +474,7 @@ const LeagueDetail: React.FC = () => {
                     Total Members
                   </p>
                   <p className="text-2xl font-bold">
-                    {league.stats?.totalMembers || 0}
+                    {members.length}
                   </p>
                 </div>
                 <div className="bg-gray-50 dark:bg-zinc-700 p-4 rounded-lg">

@@ -361,17 +361,40 @@ const LeaguesPage: React.FC = () => {
                         View
                       </Link>
 
-                      {/* If not already a member, show join button */}
-                      {!myLeagues.some(
-                        (myLeague) => myLeague.id === league.id,
-                      ) && (
-                        <Link
-                          to={`/leagues/join/${league.id}`}
-                          className="px-3 py-1 text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200 rounded-md hover:bg-green-200 dark:hover:bg-green-900/50"
-                        >
-                          Join
-                        </Link>
-                      )}
+                      {/* Show appropriate action based on membership status */}
+                      {(() => {
+                        // Judges/administrators don't participate as members
+                        if (isJudge(auth.currentUser)) {
+                          return (
+                            <span className="px-3 py-1 text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200 rounded-md">
+                              Administrator
+                            </span>
+                          );
+                        }
+
+                        const membership = myLeagues.find(
+                          (myLeague) => myLeague.id === league.id,
+                        );
+                        
+                        if (membership) {
+                          // User is already a member
+                          return (
+                            <span className="px-3 py-1 text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300 rounded-md">
+                              Member
+                            </span>
+                          );
+                        } else {
+                          // User is not a member, show join button
+                          return (
+                            <Link
+                              to={`/leagues/join/${league.id}`}
+                              className="px-3 py-1 text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200 rounded-md hover:bg-green-200 dark:hover:bg-green-900/50"
+                            >
+                              Join
+                            </Link>
+                          );
+                        }
+                      })()}
                     </div>
                   </div>
                 </div>

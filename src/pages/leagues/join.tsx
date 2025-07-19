@@ -10,6 +10,7 @@ import {
   where,
   getDocs,
   serverTimestamp,
+  onSnapshot,
 } from "firebase/firestore";
 import { auth } from "../../firebase";
 import {
@@ -19,6 +20,8 @@ import {
   ChartBarIcon,
 } from "@heroicons/react/24/solid";
 import type { League } from "../../models/league";
+import { ConfirmModal } from "@/components/modal";
+import { isJudge } from "../../utils/auth";
 
 const JoinLeague: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -30,22 +33,51 @@ const JoinLeague: React.FC = () => {
   const [joinMessage, setJoinMessage] = useState("");
   const [alreadyMember, setAlreadyMember] = useState(false);
   const [pendingRequest, setPendingRequest] = useState(false);
+  const [redirectCountdown, setRedirectCountdown] = useState<number | null>(null);
+  const [showJoinConfirmModal, setShowJoinConfirmModal] = useState(false);
 
   useEffect(() => {
-    const fetchLeagueData = async () => {
-      if (!id || !auth.currentUser) {
-        navigate("/leagues");
+    if (!id || !auth.currentUser) {
+      navigate("/leagues");
+      return;
+    }
+
+    // Judges/administrators cannot join leagues as members
+    if (isJudge(auth.currentUser)) {
+      navigate(`/leagues/${id}`);
+      return;
+    }
+
+    // Quick early check for membership before setting up listeners
+    const quickMembershipCheck = async () => {
+      const db = getFirestore();
+      const membershipQuery = query(
+        collection(db, "leagueMemberships"),
+        where("leagueId", "==", id),
+        where("userId", "==", auth.currentUser!.uid),
+        where("status", "==", "active")
+      );
+      
+      const membershipSnap = await getDocs(membershipQuery);
+      if (!membershipSnap.empty) {
+        // User is already a member, redirect immediately
+        navigate(`/leagues/${id}`);
         return;
       }
+    };
 
-      setLoading(true);
-      setError(null);
+    quickMembershipCheck();
 
-      try {
-        const db = getFirestore();
-        const leagueRef = doc(db, "leagues", id);
-        const leagueSnap = await getDoc(leagueRef);
+    setLoading(true);
+    setError(null);
 
+    const db = getFirestore();
+    
+    // Set up real-time listener for league data
+    const leagueRef = doc(db, "leagues", id);
+    const unsubLeague = onSnapshot(
+      leagueRef,
+      (leagueSnap) => {
         if (!leagueSnap.exists()) {
           setError("League not found");
           setLoading(false);
@@ -57,47 +89,77 @@ const JoinLeague: React.FC = () => {
           ...leagueSnap.data(),
         } as League;
         setLeague(leagueData);
-
-        // Check if user is already a member
-        const membershipQuery = query(
-          collection(db, "leagueMemberships"),
-          where("leagueId", "==", id),
-          where("userId", "==", auth.currentUser.uid),
-        );
-
-        const membershipSnap = await getDocs(membershipQuery);
-        if (!membershipSnap.empty) {
-          const membership = membershipSnap.docs[0].data();
-          if (membership.status === "active") {
-            setAlreadyMember(true);
-          } else if (membership.status === "pending") {
-            setPendingRequest(true);
-          }
-        }
-
-        // Also check if user already has a pending join request in leagueJoinRequests
-        if (!alreadyMember) {
-          const joinRequestQuery = query(
-            collection(db, "leagueJoinRequests"),
-            where("leagueId", "==", id),
-            where("userId", "==", auth.currentUser.uid),
-            where("status", "==", "pending")
-          );
-
-          const joinRequestSnap = await getDocs(joinRequestQuery);
-          if (!joinRequestSnap.empty) {
-            setPendingRequest(true);
-          }
-        }
-      } catch (err) {
+      },
+      (err) => {
         console.error("Error fetching league data:", err);
         setError("Failed to load league data");
-      } finally {
         setLoading(false);
       }
-    };
+    );
 
-    fetchLeagueData();
+    // Set up real-time listener for membership status (FIRST PRIORITY)
+    const membershipQuery = query(
+      collection(db, "leagueMemberships"),
+      where("leagueId", "==", id),
+      where("userId", "==", auth.currentUser.uid),
+    );
+
+    const unsubMembership = onSnapshot(membershipQuery, (membershipSnap) => {
+      if (!membershipSnap.empty) {
+        const membership = membershipSnap.docs[0].data();
+        
+        if (membership.status === "active") {
+          setAlreadyMember(true);
+          setPendingRequest(false);
+          setLoading(false);
+          
+          // Start countdown for auto-redirect
+          setRedirectCountdown(3);
+          const countdownInterval = setInterval(() => {
+            setRedirectCountdown((prev) => {
+              if (prev === null || prev <= 1) {
+                clearInterval(countdownInterval);
+                navigate(`/leagues/${id}`);
+                return null;
+              }
+              return prev - 1;
+            });
+          }, 1000);
+          
+          return; // Exit early - user is already a member
+        } else if (membership.status === "pending") {
+          setAlreadyMember(false);
+          setPendingRequest(true);
+          setLoading(false);
+          return; // Exit early - user has pending membership
+        }
+      }
+      
+      // If no membership found, reset membership state and check join requests
+      setAlreadyMember(false);
+    });
+
+    // Set up real-time listener for join requests (SECOND PRIORITY)
+    const joinRequestQuery = query(
+      collection(db, "leagueJoinRequests"),
+      where("leagueId", "==", id),
+      where("userId", "==", auth.currentUser.uid),
+      where("status", "==", "pending")
+    );
+
+    const unsubJoinRequests = onSnapshot(joinRequestQuery, (joinRequestSnap) => {
+      // Only set pending request if user is not already a member
+      // This will be overridden by membership listener if user is a member
+      setPendingRequest(!joinRequestSnap.empty);
+      setLoading(false);
+    });
+
+    // Cleanup listeners on unmount
+    return () => {
+      unsubLeague();
+      unsubMembership();
+      unsubJoinRequests();
+    };
   }, [id, navigate]);
 
   const handleJoinRequest = async (e: React.FormEvent) => {
@@ -117,7 +179,56 @@ const JoinLeague: React.FC = () => {
       setError("You already have a pending request to join this league");
       return;
     }
+
+    // Check for duplicate membership by username
+    const db = getFirestore();
     
+    // Get current user's profile to get username
+    const currentUserDoc = await getDoc(doc(db, "users", auth.currentUser.uid));
+    if (!currentUserDoc.exists()) {
+      setError("User profile not found");
+      return;
+    }
+    
+    const currentUserData = currentUserDoc.data();
+    const currentUsername = currentUserData.username || currentUserData.displayName;
+
+    if (currentUsername) {
+      // Check if any member with this username already exists
+      const membersQuery = query(
+        collection(db, "leagueMemberships"),
+        where("leagueId", "==", id),
+        where("status", "==", "active")
+      );
+      
+      const membersSnap = await getDocs(membersQuery);
+      
+      for (const memberDoc of membersSnap.docs) {
+        const memberData = memberDoc.data();
+        const memberUserDoc = await getDoc(doc(db, "users", memberData.userId));
+        
+        if (memberUserDoc.exists()) {
+          const memberUserData = memberUserDoc.data();
+          const memberUsername = memberUserData.username || memberUserData.displayName;
+          
+          if (memberUsername === currentUsername) {
+            setError(`A member with username "${currentUsername}" is already in this league`);
+            return;
+          }
+        }
+      }
+    }
+    
+    // Show confirmation modal
+    setShowJoinConfirmModal(true);
+  };
+
+  const handleConfirmJoin = async () => {
+    if (!id || !auth.currentUser || !league) {
+      setError("You must be logged in to join a league");
+      return;
+    }
+
     // Double-check for pending requests to prevent duplicates
     const db = getFirestore();
     const joinRequestQuery = query(
@@ -131,15 +242,15 @@ const JoinLeague: React.FC = () => {
     if (!joinRequestSnap.empty) {
       setPendingRequest(true);
       setError("You already have a pending request to join this league");
+      setShowJoinConfirmModal(false);
       return;
     }
 
     setSubmitting(true);
     setError(null);
+    setShowJoinConfirmModal(false);
 
     try {
-      const db = getFirestore();
-
       // If the league doesn't require approval, directly add as member
       if (!league.settings.allowJoinRequests) {
         // Add user as a member directly
@@ -159,6 +270,9 @@ const JoinLeague: React.FC = () => {
           },
         });
 
+        // Note: Don't set local state here - let the onSnapshot listener handle it
+        // This ensures consistency with real-time updates
+        
         // Update league member count
         // In a real implementation, this would be handled by a server function
         // to ensure atomic updates
@@ -172,12 +286,11 @@ const JoinLeague: React.FC = () => {
           message: joinMessage,
         });
         
-        // Update local state to show pending request instead of navigating
-        setPendingRequest(true);
+        // Note: Don't set local state here - let the onSnapshot listener handle it
+        // This ensures consistency with real-time updates
       }
     } catch (err) {
       console.error("Error joining league:", err);
-      setError("Failed to join league. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -275,19 +388,43 @@ const JoinLeague: React.FC = () => {
 
       <div className="bg-white dark:bg-zinc-800 rounded-lg shadow p-6">
         {alreadyMember ? (
-          <div className="text-center py-6">
-            <h2 className="text-xl font-semibold mb-2">
-              You are already a member of this league
-            </h2>
-            <p className="text-gray-600 dark:text-gray-400 mb-4">
-              You can view league details and participate in games.
-            </p>
-            <button
-              onClick={() => navigate(`/leagues/${id}`)}
-              className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-            >
-              Go to League
-            </button>
+          <div className="text-center py-8">
+            <div className="mb-4">
+              <div className="w-16 h-16 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg className="w-8 h-8 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <h2 className="text-xl font-semibold mb-2 text-green-700 dark:text-green-300">
+                You are already a member of this league!
+              </h2>
+              <p className="text-gray-600 dark:text-gray-400 mb-4">
+                You have full access to view league details, participate in games, and compete with other members.
+              </p>
+              
+              {redirectCountdown !== null && (
+                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md px-4 py-3 mb-4 inline-block">
+                  <p className="text-blue-700 dark:text-blue-300 text-sm">
+                    Redirecting to league page in {redirectCountdown} second{redirectCountdown !== 1 ? 's' : ''}...
+                  </p>
+                </div>
+              )}
+            </div>
+            
+            <div className="flex justify-center space-x-3">
+              <button
+                onClick={() => navigate(`/leagues/${id}`)}
+                className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+              >
+                Go to League Now
+              </button>
+              <button
+                onClick={() => navigate('/leagues')}
+                className="px-6 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300 dark:bg-zinc-700 dark:text-gray-200 dark:hover:bg-zinc-600 transition-colors"
+              >
+                Back to All Leagues
+              </button>
+            </div>
           </div>
         ) : pendingRequest ? (
           <div className="text-center py-6">
@@ -376,6 +513,21 @@ const JoinLeague: React.FC = () => {
           </form>
         )}
       </div>
+
+      {/* Join Confirmation Modal */}
+      <ConfirmModal
+        isOpen={showJoinConfirmModal}
+        onClose={() => setShowJoinConfirmModal(false)}
+        onConfirm={handleConfirmJoin}
+        title="Confirm Join League"
+        message={`Are you sure you want to join "${league?.name}"? ${
+          league?.settings?.allowJoinRequests
+            ? "Your request will be sent to the league administrators for approval."
+            : "You will be added to the league immediately."
+        }`}
+        confirmText={league?.settings?.allowJoinRequests ? "Send Request" : "Join League"}
+        confirmButtonClass="bg-blue-600 hover:bg-blue-700 text-white"
+      />
     </div>
   );
 };

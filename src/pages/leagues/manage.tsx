@@ -36,6 +36,8 @@ const LeagueManagement: React.FC = () => {
     "details" | "members" | "requests" | "danger"
   >("details");
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showRemoveMemberModal, setShowRemoveMemberModal] = useState(false);
+  const [memberToRemove, setMemberToRemove] = useState<{ id: string; name: string } | null>(null);
   const [userDisplayNames, setUserDisplayNames] = useState<
     Record<string, string>
   >({});
@@ -207,7 +209,8 @@ const LeagueManagement: React.FC = () => {
         );
 
         const unsubMembers = onSnapshot(membersQuery, async (membersSnap) => {
-          const membersData: LeagueMember[] = [];
+          // First, collect all member data
+          const allMembersData: LeagueMember[] = [];
           const userIds: string[] = [];
 
           membersSnap.forEach((docSnapshot) => {
@@ -215,55 +218,65 @@ const LeagueManagement: React.FC = () => {
               id: docSnapshot.id,
               ...docSnapshot.data(),
             } as unknown as LeagueMember;
-            membersData.push(memberData);
+            allMembersData.push(memberData);
             userIds.push(memberData.userId);
           });
 
-          setMembers(membersData);
-
-          // Find which users we need to fetch data for (use local cache)
-          const existingUserNames = { ...userDisplayNames };
-          const missingUserIds = userIds.filter(
-            (userId) => !existingUserNames[userId],
-          );
-
-          // Only fetch if we have missing users and aren't already fetching
-          if (missingUserIds.length > 0 && !fetchingUserData) {
-            setFetchingUserData(true);
-
+          // Fetch user data to check for judges and get display names
+          const userDataPromises = userIds.map(async (userId) => {
             try {
-              const userPromises: Promise<void>[] = [];
-              const newUserNames: Record<string, string> = {
-                ...existingUserNames,
-              };
-
-              // Create a promise for each user
-              missingUserIds.forEach((userId) => {
-                const userPromise = getDoc(firestoreDoc(db, "users", userId))
-                  .then((userDoc) => {
-                    if (userDoc.exists()) {
-                      const userData = userDoc.data();
-                      newUserNames[userId] =
-                        userData.displayName || userData.username || userId;
-                    } else {
-                      newUserNames[userId] = userId;
-                    }
-                  })
-                  .catch(() => {
-                    newUserNames[userId] = userId;
-                  });
-
-                userPromises.push(userPromise);
-              });
-
-              // Wait for all promises to resolve
-              await Promise.all(userPromises);
-
-              // Update the state once
-              setUserDisplayNames(newUserNames);
-            } finally {
-              setFetchingUserData(false);
+              const userDoc = await getDoc(firestoreDoc(db, "users", userId));
+              if (userDoc.exists()) {
+                const userData = userDoc.data();
+                return {
+                  userId,
+                  userData,
+                  isJudgeUser: isJudge(userData.email || ""),
+                  displayName: userData.displayName || userData.username || userId
+                };
+              }
+            } catch (error) {
+              console.error(`Error fetching user data for ${userId}:`, error);
             }
+            return {
+              userId,
+              userData: null,
+              isJudgeUser: false,
+              displayName: userId
+            };
+          });
+
+          try {
+            const userDataResults = await Promise.all(userDataPromises);
+            const userDataMap = new Map(userDataResults.map(result => [result.userId, result]));
+            
+            // Filter out judges/administrators and prepare final member list
+            const filteredMembersData: LeagueMember[] = [];
+            allMembersData.forEach((member) => {
+              const userResult = userDataMap.get(member.userId);
+              
+              // Only include non-judge members
+              if (userResult && !userResult.isJudgeUser) {
+                filteredMembersData.push(member);
+              }
+            });
+
+            setMembers(filteredMembersData);
+
+            // Update display names state for non-judge users only
+            const newUserNames: Record<string, string> = { ...userDisplayNames };
+            userDataResults.forEach((result) => {
+              if (!result.isJudgeUser) {
+                newUserNames[result.userId] = result.displayName;
+              }
+            });
+            
+            setUserDisplayNames(newUserNames);
+            
+          } catch (error) {
+            console.error("Error processing member data:", error);
+            // Fallback: set members without filtering if there's an error
+            setMembers(allMembersData);
           }
         });
 
@@ -440,6 +453,17 @@ const LeagueManagement: React.FC = () => {
   ) => {
     if (!id || !memberId) return;
 
+    // If action is remove, show confirmation modal instead of executing immediately
+    if (action === "remove") {
+      const member = members.find((m) => m.id === memberId);
+      if (member) {
+        const memberName = userDisplayNames[member.userId] || member.userId;
+        setMemberToRemove({ id: memberId, name: memberName });
+        setShowRemoveMemberModal(true);
+      }
+      return;
+    }
+
     setSaving(true);
     setError(null);
 
@@ -447,16 +471,7 @@ const LeagueManagement: React.FC = () => {
       const db = getFirestore();
       const memberRef = firestoreDoc(db, "leagueMemberships", memberId);
 
-      if (action === "remove") {
-        // Remove member
-        await updateDoc(memberRef, {
-          status: "inactive",
-          updatedAt: serverTimestamp(),
-        });
-
-        // Update local state
-        setMembers((prev) => prev.filter((m) => m.id !== memberId));
-      } else if (action === "promote") {
+      if (action === "promote") {
         // Promote to admin
         await updateDoc(memberRef, {
           role: "admin",
@@ -482,6 +497,37 @@ const LeagueManagement: React.FC = () => {
     } catch (err) {
       console.error(`Error ${action} member:`, err);
       setError(`Failed to ${action} member. Please try again.`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Handle confirmed member removal
+  const handleConfirmRemoveMember = async () => {
+    if (!memberToRemove) return;
+
+    setSaving(true);
+    setError(null);
+
+    try {
+      const db = getFirestore();
+      const memberRef = firestoreDoc(db, "leagueMemberships", memberToRemove.id);
+
+      // Remove member by setting status to inactive
+      await updateDoc(memberRef, {
+        status: "inactive",
+        updatedAt: serverTimestamp(),
+      });
+
+      // Update local state
+      setMembers((prev) => prev.filter((m) => m.id !== memberToRemove.id));
+      
+      // Close modal and reset state
+      setShowRemoveMemberModal(false);
+      setMemberToRemove(null);
+    } catch (err) {
+      console.error("Error removing member:", err);
+      setError("Failed to remove member. Please try again.");
     } finally {
       setSaving(false);
     }
@@ -514,7 +560,7 @@ const LeagueManagement: React.FC = () => {
 
   return (
     <div className="p-6 max-w-4xl mx-auto text-white">
-      {/* Delete Confirmation Modal */}
+      {/* Delete League Confirmation Modal */}
       <ConfirmModal
         isOpen={showDeleteModal}
         onClose={() => setShowDeleteModal(false)}
@@ -533,6 +579,30 @@ const LeagueManagement: React.FC = () => {
           </div>
         }
         confirmText="Delete League"
+        isDestructive={true}
+      />
+
+      {/* Remove Member Confirmation Modal */}
+      <ConfirmModal
+        isOpen={showRemoveMemberModal}
+        onClose={() => {
+          setShowRemoveMemberModal(false);
+          setMemberToRemove(null);
+        }}
+        onConfirm={handleConfirmRemoveMember}
+        title="Remove Member"
+        message={
+          <div>
+            <p className="mb-2">
+              Are you sure you want to remove{" "}
+              <strong>{memberToRemove?.name}</strong> from the league?
+            </p>
+            <p>
+              This action will remove the member from the league. They can request to join again if needed.
+            </p>
+          </div>
+        }
+        confirmText="Remove Member"
         isDestructive={true}
       />
 
