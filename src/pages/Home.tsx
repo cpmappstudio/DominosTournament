@@ -51,7 +51,7 @@ const Home: React.FC = () => {
     <div className="flex flex-col min-h-screen items-center justify-center p-6 text-zinc-900 dark:text-white">
       {/* Hero Section with Logo */}
       <div className="text-center mb-10">
-        <div className="flex justify-center mb-6">
+        <div className="flex justify-center">
           <img
             src="/usa-federation-long.png"
             alt="USA Domino Federation"
