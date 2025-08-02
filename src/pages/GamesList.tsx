@@ -265,21 +265,52 @@ const NoGamesState = memo(({ isInActiveGame, onCreateGame }: {
 
 const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
   const navigate = useNavigate();
-  const [games, setGames] = useState<Game[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [userProfiles, setUserProfiles] = useState<Record<string, UserProfile>>(
-    {},
-  );
+  
+  // Combine related states to reduce re-renders
+  const [gameState, setGameState] = useState({
+    games: [] as Game[],
+    loading: true,
+    error: null as string | null,
+    isRefreshing: false,
+  });
+  
+  const [userProfiles, setUserProfiles] = useState<Record<string, UserProfile>>({});
   const [leagueNames, setLeagueNames] = useState<Record<string, string>>({});
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [isInActiveGame, setIsInActiveGame] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Table states
   const [sorting, setSorting] = useState<SortingState>([])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [globalFilter, setGlobalFilter] = useState("")
+
+  // Optimize league fetching - batch all league requests
+  const fetchLeagueNames = useCallback(async (leagueIds: string[]) => {
+    if (leagueIds.length === 0) return {};
+    
+    try {
+      // Batch fetch all leagues at once instead of individual requests
+      const leaguePromises = leagueIds.map(async (leagueId) => {
+        const league = await getLeagueById(leagueId);
+        return league ? { id: leagueId, name: league.name } : null;
+      });
+
+      const leagues = (await Promise.all(leaguePromises)).filter(Boolean) as {
+        id: string;
+        name: string;
+      }[];
+      
+      const leaguesMap: Record<string, string> = {};
+      leagues.forEach((league) => {
+        leaguesMap[league.id] = league.name;
+      });
+      
+      return leaguesMap;
+    } catch (error) {
+      console.error("Error fetching league names:", error);
+      return {};
+    }
+  }, []);
 
   // Function to refresh games list - memoized with useCallback
   const refreshGames = useCallback(async () => {
@@ -289,11 +320,11 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
     }
 
     try {
-      setIsRefreshing(true);
+      setGameState(prev => ({ ...prev, isRefreshing: true }));
 
       // First get all games
       const userGames = await getUserGames();
-      setGames(userGames);
+      setGameState(prev => ({ ...prev, games: userGames }));
 
       // Then check if user is in an active game
       if (auth.currentUser) {
@@ -332,27 +363,13 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
       setUserProfiles(profilesMap);
 
       // Get league names for games that belong to leagues
-      const leagueIds = new Set<string>();
-      userGames.forEach((game) => {
-        if (game.leagueId) {
-          leagueIds.add(game.leagueId);
-        }
-      });
-
-      const leaguePromises = Array.from(leagueIds).map(async (leagueId) => {
-        const league = await getLeagueById(leagueId);
-        return league ? { id: leagueId, name: league.name } : null;
-      });
-
-      const leagues = (await Promise.all(leaguePromises)).filter(Boolean) as {
-        id: string;
-        name: string;
-      }[];
-      const leaguesMap: Record<string, string> = {};
-      leagues.forEach((league) => {
-        leaguesMap[league.id] = league.name;
-      });
-
+      const leagueIds = Array.from(new Set(
+        userGames
+          .map(game => game.leagueId)
+          .filter(Boolean) as string[]
+      ));
+      
+      const leaguesMap = await fetchLeagueNames(leagueIds);
       setLeagueNames(leaguesMap);
 
       // Check for new invitations
@@ -367,64 +384,68 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
       }
     } catch (error) {
       console.error("Error fetching games:", error);
-      setError("Failed to load your games");
+      setGameState(prev => ({ ...prev, error: "Failed to load your games" }));
     } finally {
-      setIsRefreshing(false);
+      setGameState(prev => ({ ...prev, isRefreshing: false }));
     }
-  }, [navigate, refreshNotifications]);
+  }, [navigate, refreshNotifications, fetchLeagueNames]);
 
+  // Optimize real-time listeners with stable references
   useEffect(() => {
+    const currentUser = auth.currentUser;
+    if (!currentUser) return;
+
     const fetchGames = async () => {
-      setLoading(true);
+      setGameState(prev => ({ ...prev, loading: true }));
       await refreshGames();
-      setLoading(false);
+      setGameState(prev => ({ ...prev, loading: false }));
     };
 
     fetchGames();
 
-    // Set up real-time listeners for game updates instead of interval-based refresh
+    // Set up real-time listeners for game updates
     const db = getFirestore();
 
-    // Only proceed if user is logged in
-    if (!auth.currentUser) return;
-
-    // Listen for games where user is creator
+    // Create queries with stable references
     const creatorQuery = query(
       collection(db, "games"),
-      where("createdBy", "==", auth.currentUser.uid),
+      where("createdBy", "==", currentUser.uid),
     );
 
-    // Listen for games where user is opponent
     const opponentQuery = query(
       collection(db, "games"),
-      where("opponent", "==", auth.currentUser.uid),
+      where("opponent", "==", currentUser.uid),
     );
+
+    // Debounced refresh to avoid excessive calls
+    let refreshTimeout: NodeJS.Timeout;
+    const debouncedRefresh = () => {
+      clearTimeout(refreshTimeout);
+      refreshTimeout = setTimeout(() => {
+        refreshGames();
+      }, 500); // 500ms debounce
+    };
 
     // Set up the listeners
     const creatorUnsubscribe = onSnapshot(creatorQuery, (snapshot) => {
-      if (!snapshot.empty) {
-        // Only refresh if there are actual changes
-        if (snapshot.docChanges().length > 0) {
-          refreshGames();
-        }
+      if (!snapshot.empty && snapshot.docChanges().length > 0) {
+        debouncedRefresh();
       }
     });
 
     const opponentUnsubscribe = onSnapshot(opponentQuery, (snapshot) => {
-      if (!snapshot.empty) {
-        // Only refresh if there are actual changes
-        if (snapshot.docChanges().length > 0) {
-          refreshGames();
-        }
+      if (!snapshot.empty && snapshot.docChanges().length > 0) {
+        debouncedRefresh();
       }
     });
 
     // Clean up listeners when component unmounts
     return () => {
+      clearTimeout(refreshTimeout);
       creatorUnsubscribe();
       opponentUnsubscribe();
     };
-  }, [navigate]);
+  }, []); // Empty dependency array - only run once
 
   // Helper to format date - memoized
   const formatDate = useCallback((timestamp: unknown): string => {
@@ -480,7 +501,7 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
 
   // Transform games data for table display - memoized
   const tableData = useMemo(() => {
-    return games.map((game): GameTableRow => {
+    return gameState.games.map((game): GameTableRow => {
       const isCreator = auth.currentUser?.uid === game.createdBy;
       const opponentData = getOpponentData(game);
       
@@ -541,16 +562,17 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
         leagueName: game.leagueId ? (leagueNames[game.leagueId] || "League Game") : "Individual",
       };
     });
-  }, [games, getOpponentData, formatDate, leagueNames]);
+  }, [gameState.games, getOpponentData, formatDate, leagueNames]);
 
   // Handle accepting a game invitation - memoized
   const handleAcceptInvitation = useCallback(async (gameId: string) => {
     try {
       // Check if user is already in an active game before proceeding
       if (isInActiveGame) {
-        setError(
-          "You cannot accept this invitation because you're already in an active game",
-        );
+        setGameState(prev => ({ 
+          ...prev, 
+          error: "You cannot accept this invitation because you're already in an active game" 
+        }));
         return;
       }
 
@@ -563,7 +585,7 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
       }
     } catch (error) {
       console.error("Error accepting invitation:", error);
-      setError("Failed to accept game invitation");
+      setGameState(prev => ({ ...prev, error: "Failed to accept game invitation" }));
     } finally {
       setActionInProgress(null);
     }
@@ -580,7 +602,7 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
       }
     } catch (error) {
       console.error("Error rejecting invitation:", error);
-      setError("Failed to reject game invitation");
+      setGameState(prev => ({ ...prev, error: "Failed to reject game invitation" }));
     } finally {
       setActionInProgress(null);
     }
@@ -600,7 +622,7 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
       }
     } catch (error) {
       console.error("Error starting game:", error);
-      setError("Failed to start the game");
+      setGameState(prev => ({ ...prev, error: "Failed to start the game" }));
     } finally {
       setActionInProgress(null);
     }
@@ -663,7 +685,7 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
     };
   }, [tableData]);
 
-  if (loading) {
+  if (gameState.loading) {
     return <LoadingState />;
   }
 
@@ -689,7 +711,7 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
           <div className="flex items-center">
             <button
               onClick={refreshGames}
-              disabled={isRefreshing}
+              disabled={gameState.isRefreshing}
               className="md:ml-3 p-1 rounded-full text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-300"
               title="Refresh games list"
             >
@@ -699,7 +721,7 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
                 viewBox="0 0 24 24"
                 strokeWidth={1.5}
                 stroke="currentColor"
-                className={`w-5 h-5 ${isRefreshing ? "animate-spin" : ""}`}
+                className={`w-5 h-5 ${gameState.isRefreshing ? "animate-spin" : ""}`}
               >
                 <path
                   strokeLinecap="round"
@@ -728,13 +750,13 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
         </Link>
       </div>
 
-      {error && (
+      {gameState.error && (
         <div className="mb-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded-md flex justify-between items-center">
-          <div>{error}</div>
+          <div>{gameState.error}</div>
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setError(null)}
+            onClick={() => setGameState(prev => ({ ...prev, error: null }))}
             className="ml-4 text-red-700 hover:text-red-800"
           >
             Dismiss
@@ -742,7 +764,7 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
         </div>
       )}
 
-      {isRefreshing && !loading && (
+      {gameState.isRefreshing && !gameState.loading && (
         <div className="mb-6 p-4 bg-blue-100 border border-blue-400 text-blue-800 rounded-md flex items-center">
           <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-blue-800 mr-2"></div>
           <span>Refreshing games...</span>
@@ -759,7 +781,7 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
         </div>
       )}
 
-      {games.length === 0 ? (
+      {gameState.games.length === 0 ? (
         <NoGamesState isInActiveGame={isInActiveGame} onCreateGame={handleCreateGameClick} />
       ) : (
         <Card>

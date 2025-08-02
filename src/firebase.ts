@@ -17,14 +17,14 @@ import {
   addDoc,
   limit
 } from "firebase/firestore";
-// Firebase Storage imports - COMMENTED OUT until upgrade
-// import { 
-//   getStorage, 
-//   ref, 
-//   uploadBytes, 
-//   getDownloadURL, 
-//   deleteObject 
-// } from "firebase/storage";
+// Firebase Storage imports - ENABLED
+import { 
+  getStorage, 
+  ref, 
+  uploadBytes, 
+  getDownloadURL, 
+  deleteObject 
+} from "firebase/storage";
 import { Season } from './models/league';
 import config from './config';
 
@@ -32,7 +32,7 @@ import config from './config';
 const app = initializeApp(config.firebase);
 const auth = getAuth(app);
 const db = getFirestore(app);
-// const storage = getStorage(app); // COMMENTED OUT until Firebase Storage upgrade
+const storage = getStorage(app); // Firebase Storage ENABLED
 const googleProvider = new GoogleAuthProvider();
 
 // Query limit from configuration
@@ -1495,101 +1495,155 @@ export const updateSeasonStats = async (seasonId: string, stats: Partial<Season[
   }
 };
 
-// Profile image management functions - COMMENTED OUT until Firebase Storage upgrade
-// export const uploadProfileImage = async (file: File, userId: string): Promise<string> => {
-//   try {
-//     // Validate file type
-//     if (!file.type.startsWith('image/')) {
-//       throw new Error('Please select a valid image file');
-//     }
+// Profile image management functions
+export const uploadProfileImage = async (file: File, userId: string): Promise<string> => {
+  try {
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      throw new Error('Please select a valid image file (JPG, PNG, GIF, WebP)');
+    }
 
-//     // Validate file size (5MB max)
-//     if (file.size > 5 * 1024 * 1024) {
-//       throw new Error('Image size must be less than 5MB');
-//     }
+    // Validate file size (5MB max)
+    if (file.size > 5 * 1024 * 1024) {
+      throw new Error('Image size must be less than 5MB');
+    }
 
-//     // Create a reference to the user's profile image
-//     const imageRef = ref(storage, `profile-images/${userId}`);
+    // Create a reference to the user's profile image
+    const imageRef = ref(storage, `profile-images/${userId}`);
 
-//     // Upload the file
-//     const snapshot = await uploadBytes(imageRef, file);
+    // Upload the file
+    const snapshot = await uploadBytes(imageRef, file);
     
-//     // Get the download URL
-//     const downloadURL = await getDownloadURL(snapshot.ref);
+    // Get the download URL
+    const downloadURL = await getDownloadURL(snapshot.ref);
 
-//     // Update user's auth profile
-//     if (auth.currentUser) {
-//       await updateProfile(auth.currentUser, {
-//         photoURL: downloadURL
-//       });
-//     }
+    // Update user's auth profile
+    if (auth.currentUser) {
+      await updateProfile(auth.currentUser, {
+        photoURL: downloadURL
+      });
+    }
 
-//     // Update user document in Firestore
-//     const userRef = doc(db, "users", userId);
-//     await updateDoc(userRef, {
-//       photoURL: downloadURL,
-//       updatedAt: serverTimestamp()
-//     });
+    // Update user document in Firestore
+    const userRef = doc(db, "users", userId);
+    await updateDoc(userRef, {
+      photoURL: downloadURL,
+      updatedAt: serverTimestamp()
+    });
 
-//     return downloadURL;
-//   } catch (error: any) {
-//     console.error("Error uploading profile image:", error);
+    return downloadURL;
+  } catch (error: any) {
+    console.error("Error uploading profile image:", error);
     
-//     // Provide more specific error messages
-//     if (error.code === 'storage/unauthorized') {
-//       throw new Error('Firebase Storage is not enabled or rules are not configured. Please check Firebase Console.');
-//     } else if (error.code === 'storage/quota-exceeded') {
-//       throw new Error('Storage quota exceeded. Please contact support.');
-//     } else if (error.message && error.message.includes('CORS')) {
-//       throw new Error('Firebase Storage is not properly configured. Please enable Storage in Firebase Console.');
-//     } else {
-//       throw error;
-//     }
-//   }
-// };
+    // Provide more specific error messages
+    if (error.code === 'storage/unauthorized') {
+      throw new Error('Firebase Storage is not enabled or rules are not configured. Please check Firebase Console.');
+    } else if (error.code === 'storage/quota-exceeded') {
+      throw new Error('Storage quota exceeded. Please contact support.');
+    } else if (error.message && error.message.includes('CORS')) {
+      throw new Error('Firebase Storage is not properly configured. Please enable Storage in Firebase Console.');
+    } else {
+      throw error;
+    }
+  }
+};
 
-// export const deleteProfileImage = async (userId: string): Promise<void> => {
-//   try {
-//     // Create a reference to the user's profile image
-//     const imageRef = ref(storage, `profile-images/${userId}`);
+export const deleteProfileImage = async (userId: string): Promise<void> => {
+  try {
+    // Create a reference to the user's profile image
+    const imageRef = ref(storage, `profile-images/${userId}`);
 
-//     // Delete the file from storage
-//     await deleteObject(imageRef);
+    // Delete the file from storage
+    await deleteObject(imageRef);
 
-//     // Update user's auth profile to remove photo
-//     if (auth.currentUser) {
-//       await updateProfile(auth.currentUser, {
-//         photoURL: null
-//       });
-//     }
+    // Update user's auth profile to remove photo
+    if (auth.currentUser) {
+      await updateProfile(auth.currentUser, {
+        photoURL: null
+      });
+    }
 
-//     // Update user document in Firestore
-//     const userRef = doc(db, "users", userId);
-//     await updateDoc(userRef, {
-//       photoURL: null,
-//       updatedAt: serverTimestamp()
-//     });
-//   } catch (error) {
-//     // If image doesn't exist, that's okay - just update the profile
-//     if (error instanceof Error && error.message.includes('object-not-found')) {
-//       if (auth.currentUser) {
-//         await updateProfile(auth.currentUser, {
-//           photoURL: null
-//         });
-//       }
+    // Update user document in Firestore
+    const userRef = doc(db, "users", userId);
+    await updateDoc(userRef, {
+      photoURL: null,
+      updatedAt: serverTimestamp()
+    });
+  } catch (error) {
+    // If image doesn't exist, that's okay - just update the profile
+    if (error instanceof Error && error.message.includes('object-not-found')) {
+      if (auth.currentUser) {
+        await updateProfile(auth.currentUser, {
+          photoURL: null
+        });
+      }
       
-//       const userRef = doc(db, "users", userId);
-//       await updateDoc(userRef, {
-//         photoURL: null,
-//         updatedAt: serverTimestamp()
-//       });
-//     } else {
-//       console.error("Error deleting profile image:", error);
-//       throw error;
-//     }
-//   }
-// };
+      const userRef = doc(db, "users", userId);
+      await updateDoc(userRef, {
+        photoURL: null,
+        updatedAt: serverTimestamp()
+      });
+    } else {
+      console.error("Error deleting profile image:", error);
+      throw error;
+    }
+  }
+};
 
-export { auth, db };
-// export { auth, db, storage }; // COMMENTED OUT until Firebase Storage upgrade
+// League image management functions
+export const uploadLeagueImage = async (file: File, leagueId: string): Promise<string> => {
+  try {
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      throw new Error('Please select a valid image file (JPG, PNG, GIF, WebP)');
+    }
+
+    // Validate file size (5MB max)
+    if (file.size > 5 * 1024 * 1024) {
+      throw new Error('Image size must be less than 5MB');
+    }
+
+    // Create a reference to the league image in Firebase Storage
+    const imageRef = ref(storage, `league-images/${leagueId}`);
+    
+    // Upload the file to Firebase Storage
+    const snapshot = await uploadBytes(imageRef, file);
+    
+    // Get the download URL
+    const downloadURL = await getDownloadURL(snapshot.ref);
+    
+    return downloadURL;
+  } catch (error: any) {
+    console.error("Error uploading league image:", error);
+    
+    // Provide more specific error messages
+    if (error.code === 'storage/unauthorized') {
+      throw new Error('Firebase Storage is not enabled or rules are not configured. Please check Firebase Console.');
+    } else if (error.code === 'storage/quota-exceeded') {
+      throw new Error('Storage quota exceeded. Please contact support.');
+    } else if (error.message && error.message.includes('CORS')) {
+      throw new Error('Firebase Storage is not properly configured. Please enable Storage in Firebase Console.');
+    } else {
+      throw error;
+    }
+  }
+};
+
+export const deleteLeagueImage = async (leagueId: string): Promise<void> => {
+  try {
+    // Delete the image from Firebase Storage
+    const imageRef = ref(storage, `league-images/${leagueId}`);
+    await deleteObject(imageRef);
+  } catch (error) {
+    // If image doesn't exist, that's okay
+    if (error instanceof Error && error.message.includes('object-not-found')) {
+      return;
+    } else {
+      console.error("Error deleting league image:", error);
+      throw error;
+    }
+  }
+};
+
+export { auth, db, storage };
 export default app;

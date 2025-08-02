@@ -95,7 +95,7 @@ export const TitleBadge = memo<{ gamesWon: number }>(({ gamesWon }) => {
   const title = calculateTitle(gamesWon);
 
   return (
-    <div className="text-center">
+    <div>
       <span className="inline-block px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-100">
         {title}
       </span>

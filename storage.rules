@@ -1,16 +1,42 @@
-rules_version = '2';
-
-// Firebase Storage Security Rules for Profile Images
+rules_version = '2';    // League images - PUBLIC READ, judges can manage
+    match /league-images/{leagueId} {
+      // Allow ANYONE (even not logged in) to read league images
+      allow read: if true;  // ← PÚBLICO: No requiere autenticación
+      
+      // Allow judges to upload/update league images
+      allow write: if request.auth != null 
+                   && isJudge(request.auth.uid)
+                   && isValidImageUpload();
+      
+      // Allow judges to delete league images
+      allow delete: if request.auth != null 
+                    && isJudge(request.auth.uid);
+    }ebase Storage Security Rules for Profile Images and League Images
 service firebase.storage {
   match /b/{bucket}/o {
-    // Profile images - users can only read all images and write/delete their own
+    // Profile images - PUBLIC READ, users can write/delete their own
     match /profile-images/{userId} {
-      // Allow all authenticated users to read profile images
-      allow read: if request.auth != null;
+      // Allow ANYONE (even not logged in) to read profile images
+      allow read: if true;  // ← PÚBLICO: Para mostrar en rankings, ligas, etc.
       
-      // Allow users to upload/update/delete only their own profile image
+      // Allow users to upload/update only their own profile image
+      allow write: if request.auth != null 
+                   && request.auth.uid == userId
+                   && isValidImageUpload();
+      
+      // Allow users to delete only their own profile image
+      allow delete: if request.auth != null 
+                    && request.auth.uid == userId;
+    }
+    
+    // League images - PUBLIC READ, judges can manage
+    match /league-images/{leagueId} {
+      // Allow ANYONE (even not logged in) to read league images
+      allow read: true;  // ← PÚBLICO: No requiere autenticación
+      
+      // Allow judges to upload/update/delete league images
       allow write, delete: if request.auth != null 
-                           && request.auth.uid == userId
+                           && isJudge(request.auth.uid)
                            && isValidImageUpload();
     }
   }
@@ -21,4 +47,13 @@ function isValidImageUpload() {
   return request.resource != null
          && request.resource.size < 5 * 1024 * 1024  // 5MB max
          && request.resource.contentType.matches('image/.*');  // Only image files
+}
+
+// Helper function to check if user is a judge
+// Note: This is a simplified version. In production, you might want to
+// check against a Firestore document or custom claims
+function isJudge(userId) {
+  // For now, allow all authenticated users to create leagues
+  // This should be replaced with actual judge validation logic
+  return true;
 }

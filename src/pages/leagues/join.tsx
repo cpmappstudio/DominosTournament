@@ -14,9 +14,7 @@ import {
 } from "firebase/firestore";
 import { auth } from "../../firebase";
 import {
-   return (
-    <div className="p-6 max-w-6xl mx-auto dark:text-white">
-      <h1 className="text-3xl font-bold mb-6 flex items-center">ophyIcon,
+  TrophyIcon,
   UserGroupIcon,
   CalendarIcon,
   ChartBarIcon,
@@ -357,7 +355,7 @@ const JoinLeague: React.FC = () => {
               <li className="flex items-center">
                 <ChartBarIcon className="h-5 w-5 mr-2 text-gray-500" />
                 <span>
-                  {league.settings?.gameMode === "teams"
+                  {league.settings?.gameMode === "double"
                     ? "Team"
                     : "Individual"}{" "}
                   mode • {league.settings?.pointsToWin || 100} points

@@ -2,7 +2,7 @@
 import { Timestamp } from "firebase/firestore";
 
 // Game modes
-export type GameMode = "individual" | "teams";
+export type GameMode = "single" | "double";
 
 // League status
 export type LeagueStatus = "active" | "completed" | "upcoming" | "canceled";

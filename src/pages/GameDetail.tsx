@@ -15,7 +15,7 @@ import {
 import { useGameModeInfo, usePointsInfo, useRulesetInfo } from "../hooks/useGameConfig";
 import { getFirestore, doc, onSnapshot } from "firebase/firestore";
 import type { Game, UserProfile } from "../firebase";
-import UserProfileDialog from "../components/UserProfileDialog";
+import UserProfileModal, { useUserProfileModal } from "../components/UserProfileModal";
 import {
   Card,
   CardContent,
@@ -103,23 +103,33 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   
-  // State
-  const [game, setGame] = useState<Game | null>(null);
-  const [creator, setCreator] = useState<UserProfile | null>(null);
-  const [opponent, setOpponent] = useState<UserProfile | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [creatorScore, setCreatorScore] = useState<number>(0);
-  const [opponentScore, setOpponentScore] = useState<number>(0);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [rejectionReason, setRejectionReason] = useState<string>("");
+  // Combine related states to reduce re-renders
+  const [gameState, setGameState] = useState({
+    game: null as Game | null,
+    creator: null as UserProfile | null,
+    opponent: null as UserProfile | null,
+    leagueInfo: null as {id: string, name: string, photoURL?: string} | null,
+    loading: true,
+    error: null as string | null,
+  });
   
-  // Profile dialog state
-  const [selectedUser, setSelectedUser] = useState<UserProfile | null>(null);
-  const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false);
+  const [scoreState, setScoreState] = useState({
+    creatorScore: 0,
+    opponentScore: 0,
+    isSubmitting: false,
+  });
   
-  // League information
-  const [leagueInfo, setLeagueInfo] = useState<{id: string, name: string} | null>(null);
+  const [uiState, setUiState] = useState({
+    rejectionReason: "",
+  });
+
+  // Use the user profile modal hook
+  const { isOpen: isProfileModalOpen, selectedUser, openModal: openProfileModal, closeModal: closeProfileModal } = useUserProfileModal();
+
+  // Destructure for cleaner access
+  const { game, creator, opponent, leagueInfo, loading, error } = gameState;
+  const { creatorScore, opponentScore, isSubmitting } = scoreState;
+  const { rejectionReason } = uiState;
 
   // Check if current user is part of this game
   const isParticipant = useCallback(() => {
@@ -182,173 +192,215 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
     return game.status === "waiting_confirmation" && game.confirmedBy === auth.currentUser.uid;
   }, [game]);
 
-  // Load game data and user profiles
-  useEffect(() => {
-    const loadGame = async () => {
-      if (!id) {
-        setError("Game ID is missing");
-        setLoading(false);
+  // Optimized batch data loading function
+  const loadGameData = useCallback(async (gameId: string) => {
+    try {
+      setGameState(prev => ({ ...prev, loading: true, error: null }));
+      
+      // First, get game data
+      const gameData = await getGameById(gameId);
+      if (!gameData) {
+        setGameState(prev => ({ 
+          ...prev, 
+          loading: false, 
+          error: "Game not found" 
+        }));
         return;
       }
 
-      try {
-        setLoading(true);
-        
-        // Get game data
-        const gameData = await getGameById(id);
-        if (!gameData) {
-          setError("Game not found");
-          setLoading(false);
-          return;
-        }
-        
-        setGame(gameData);
+      // Then load all related data in parallel (much faster!)
+      const [creatorProfile, opponentProfile, leagueData] = await Promise.allSettled([
+        getUserProfile(gameData.createdBy),
+        getUserProfile(gameData.opponent),
+        gameData.leagueId ? getLeagueById(gameData.leagueId) : Promise.resolve(null)
+      ]);
 
-        // Get creator profile
-        const creatorProfile = await getUserProfile(gameData.createdBy);
-        setCreator(creatorProfile);
+      // Process results safely
+      const creator = creatorProfile.status === 'fulfilled' ? creatorProfile.value : null;
+      const opponent = opponentProfile.status === 'fulfilled' ? opponentProfile.value : null;
+      const league = leagueData.status === 'fulfilled' ? leagueData.value : null;
+      
+      // Extract league info with photoURL
+      const leagueInfo = league ? {
+        id: league.id,
+        name: league.name,
+        photoURL: league.photoURL
+      } : null;
 
-        // Get opponent profile
-        const opponentProfile = await getUserProfile(gameData.opponent);
-        setOpponent(opponentProfile);
+      // Update all state at once
+      setGameState({
+        game: gameData,
+        creator,
+        opponent,
+        leagueInfo,
+        loading: false,
+        error: null,
+      });
 
-        // Get league information if this is a league game
-        if (gameData.leagueId) {
-          try {
-            const league = await getLeagueById(gameData.leagueId);
-            setLeagueInfo(league);
-          } catch (err) {
-            console.error("Error loading league info:", err);
-            // Don't fail the whole load if league info fails
-          }
-        }
-
-        // Initialize score inputs if scores exist
-        if (gameData.scores) {
-          setCreatorScore(gameData.scores.creator);
-          setOpponentScore(gameData.scores.opponent);
-        }
-      } catch (err) {
-        console.error("Error loading game:", err);
-        setError("Failed to load game details");
-      } finally {
-        setLoading(false);
+      // Initialize scores if they exist
+      if (gameData.scores) {
+        setScoreState(prev => ({
+          ...prev,
+          creatorScore: gameData.scores.creator,
+          opponentScore: gameData.scores.opponent,
+        }));
       }
-    };
+    } catch (err) {
+      console.error("Error loading game:", err);
+      setGameState(prev => ({ 
+        ...prev, 
+        loading: false, 
+        error: "Failed to load game details" 
+      }));
+    }
+  }, []);
 
-    loadGame();
+  // Load game data and user profiles
+  useEffect(() => {
+    if (!id) {
+      setGameState(prev => ({ 
+        ...prev, 
+        loading: false, 
+        error: "Game ID is missing" 
+      }));
+      return;
+    }
+
+    loadGameData(id);
     
-    // Set up real-time listener for game updates
+    // Set up real-time listener for game updates with debouncing
     const db = getFirestore();
-    const gameRef = doc(db, "games", id || "");
+    const gameRef = doc(db, "games", id);
+    
+    let timeoutId: NodeJS.Timeout;
     
     const unsubscribe = onSnapshot(gameRef, (docSnapshot) => {
       if (docSnapshot.exists()) {
         const gameData = { id: docSnapshot.id, ...docSnapshot.data() } as Game;
-        setGame(gameData);
         
-        // Update scores if they exist
-        if (gameData.scores) {
-          setCreatorScore(gameData.scores.creator);
-          setOpponentScore(gameData.scores.opponent);
-        }
+        // Debounce updates to prevent excessive re-renders
+        clearTimeout(timeoutId);
+        timeoutId = setTimeout(() => {
+          setGameState(prev => ({ ...prev, game: gameData }));
+          
+          // Update scores if they exist
+          if (gameData.scores) {
+            setScoreState(prev => ({
+              ...prev,
+              creatorScore: gameData.scores.creator,
+              opponentScore: gameData.scores.opponent,
+            }));
+          }
+        }, 100); // 100ms debounce
       }
     }, (error) => {
       console.error("Error listening to game updates:", error);
     });
     
-    // Clean up listener on unmount
-    return () => unsubscribe();
-  }, [id, refreshNotifications]);
+    // Clean up listener and timeout on unmount
+    return () => {
+      unsubscribe();
+      clearTimeout(timeoutId);
+    };
+  }, [id, loadGameData]);
 
   // Handle accepting invitation
   const handleAcceptInvitation = useCallback(async () => {
     if (!id || !isPendingInvitation()) {
-      setError("You cannot accept this invitation");
+      setGameState(prev => ({ ...prev, error: "You cannot accept this invitation" }));
       return;
     }
 
     try {
-      setIsSubmitting(true);
-      setError(null);
+      setScoreState(prev => ({ ...prev, isSubmitting: true }));
+      setGameState(prev => ({ ...prev, error: null }));
 
       const updatedGame = await acceptGameInvitation(id);
       
       if (updatedGame) {
-        setGame(updatedGame);
+        setGameState(prev => ({ ...prev, game: updatedGame }));
         // Refresh notifications when invitation is accepted
         if (refreshNotifications) {
           refreshNotifications();
         }
       } else {
-        setError("Failed to accept invitation");
+        setGameState(prev => ({ ...prev, error: "Failed to accept invitation" }));
       }
     } catch (err: any) {
       console.error("Error accepting invitation:", err);
-      setError(err.message || "An error occurred while accepting the invitation");
+      setGameState(prev => ({ 
+        ...prev, 
+        error: err.message || "An error occurred while accepting the invitation" 
+      }));
     } finally {
-      setIsSubmitting(false);
+      setScoreState(prev => ({ ...prev, isSubmitting: false }));
     }
   }, [id, isPendingInvitation, refreshNotifications]);
 
   // Handle rejecting invitation
   const handleRejectInvitation = useCallback(async () => {
     if (!id || !isPendingInvitation()) {
-      setError("You cannot reject this invitation");
+      setGameState(prev => ({ ...prev, error: "You cannot reject this invitation" }));
       return;
     }
 
     try {
-      setIsSubmitting(true);
-      setError(null);
+      setScoreState(prev => ({ ...prev, isSubmitting: true }));
+      setGameState(prev => ({ ...prev, error: null }));
 
       const updatedGame = await rejectGameInvitation(id, rejectionReason);
       
       if (updatedGame) {
-        setGame(updatedGame);
+        setGameState(prev => ({ ...prev, game: updatedGame }));
         // Refresh notifications when invitation is rejected
         if (refreshNotifications) {
           refreshNotifications();
         }
         navigate('/games');
       } else {
-        setError("Failed to reject invitation");
+        setGameState(prev => ({ ...prev, error: "Failed to reject invitation" }));
       }
     } catch (err: any) {
       console.error("Error rejecting invitation:", err);
-      setError(err.message || "An error occurred while rejecting the invitation");
+      setGameState(prev => ({ 
+        ...prev, 
+        error: err.message || "An error occurred while rejecting the invitation" 
+      }));
     } finally {
-      setIsSubmitting(false);
+      setScoreState(prev => ({ ...prev, isSubmitting: false }));
     }
   }, [id, isPendingInvitation, rejectionReason, refreshNotifications, navigate]);
 
   // Handle starting the game
   const handleStartGame = useCallback(async () => {
     if (!id || !isAccepted()) {
-      setError("This game is not ready to start");
+      setGameState(prev => ({ ...prev, error: "This game is not ready to start" }));
       return;
     }
 
     try {
-      setIsSubmitting(true);
-      setError(null);
+      setScoreState(prev => ({ ...prev, isSubmitting: true }));
+      setGameState(prev => ({ ...prev, error: null }));
 
       const updatedGame = await startGame(id);
       
       if (updatedGame) {
-        setGame(updatedGame);
+        setGameState(prev => ({ ...prev, game: updatedGame }));
         // Refresh notifications when game starts
         if (refreshNotifications) {
           refreshNotifications();
         }
       } else {
-        setError("Failed to start the game");
+        setGameState(prev => ({ ...prev, error: "Failed to start the game" }));
       }
     } catch (err: any) {
       console.error("Error starting game:", err);
-      setError(err.message || "An error occurred while starting the game");
+      setGameState(prev => ({ 
+        ...prev, 
+        error: err.message || "An error occurred while starting the game" 
+      }));
     } finally {
-      setIsSubmitting(false);
+      setScoreState(prev => ({ ...prev, isSubmitting: false }));
     }
   }, [id, isAccepted, refreshNotifications]);
 
@@ -357,79 +409,91 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
     e.preventDefault();
     
     if (!id || !isParticipant() || !game) {
-      setError("You cannot submit scores for this game");
+      setGameState(prev => ({ ...prev, error: "You cannot submit scores for this game" }));
       return;
     }
     
     // Check if it's this player's turn to submit scores
     if (!canSubmitScores()) {
-      setError("It's not your turn to submit scores");
+      setGameState(prev => ({ ...prev, error: "It's not your turn to submit scores" }));
       return;
     }
 
     // Validate scores
     if (creatorScore < 0 || opponentScore < 0) {
-      setError("Scores cannot be negative");
+      setGameState(prev => ({ ...prev, error: "Scores cannot be negative" }));
       return;
     }
     
     // Make sure one player has reached the winning score
     const maxScore = Math.max(creatorScore, opponentScore);
     if (maxScore < game.settings.pointsToWin) {
-      setError(`At least one player must reach ${game.settings.pointsToWin} points to end the game`);
+      setGameState(prev => ({ 
+        ...prev, 
+        error: `At least one player must reach ${game.settings.pointsToWin} points to end the game` 
+      }));
       return;
     }
 
     try {
-      setIsSubmitting(true);
-      setError(null);
+      setScoreState(prev => ({ ...prev, isSubmitting: true }));
+      setGameState(prev => ({ ...prev, error: null }));
 
       const updatedGame = await submitGameScore(id, creatorScore, opponentScore);
       
       if (updatedGame) {
-        setGame(updatedGame);
+        setGameState(prev => ({ ...prev, game: updatedGame }));
         // Refresh notifications when scores are submitted
         if (refreshNotifications) {
           refreshNotifications();
         }
       } else {
-        setError("Failed to submit scores");
+        setGameState(prev => ({ ...prev, error: "Failed to submit scores" }));
       }
     } catch (err: any) {
       console.error("Error submitting scores:", err);
-      setError(err.message || "An error occurred while submitting scores");
+      setGameState(prev => ({ 
+        ...prev, 
+        error: err.message || "An error occurred while submitting scores" 
+      }));
     } finally {
-      setIsSubmitting(false);
+      setScoreState(prev => ({ ...prev, isSubmitting: false }));
     }
   }, [id, isParticipant, game, canSubmitScores, creatorScore, opponentScore, refreshNotifications]);
 
   // Handle game confirmation
   const handleConfirmation = useCallback(async (isConfirmed: boolean) => {
     if (!id || !needsConfirmation() || !game) {
-      setError("You cannot confirm this game");
+      setGameState(prev => ({ ...prev, error: "You cannot confirm this game" }));
       return;
     }
 
     try {
-      setIsSubmitting(true);
-      setError(null);
+      setScoreState(prev => ({ ...prev, isSubmitting: true }));
+      setGameState(prev => ({ ...prev, error: null }));
 
       const updatedGame = await confirmGameResult(id, isConfirmed);
       
       if (updatedGame) {
-        setGame(updatedGame);
+        setGameState(prev => ({ ...prev, game: updatedGame }));
         // Refresh notifications when game is confirmed
         if (refreshNotifications) {
           refreshNotifications();
         }
       } else {
-        setError(isConfirmed ? "Failed to confirm game" : "Failed to dispute game");
+        setGameState(prev => ({ 
+          ...prev, 
+          error: isConfirmed ? "Failed to confirm game" : "Failed to dispute game" 
+        }));
       }
     } catch (err: any) {
       console.error("Error confirming game:", err);
-      setError(err.message || "An error occurred while confirming the game");
+      setGameState(prev => ({ 
+        ...prev, 
+        error: err.message || "An error occurred while confirming the game" 
+      }));
     } finally {
-      setIsSubmitting(false);
+      setScoreState(prev => ({ ...prev, isSubmitting: false }));
     }
   }, [id, needsConfirmation, game, refreshNotifications]);
 
@@ -461,16 +525,10 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
     return { isValid, canSubmit, maxScore };
   }, [game, creatorScore, opponentScore]);
 
-  // Profile dialog handlers
+  // Profile modal handlers - now simplified
   const handleUserClick = useCallback((user: UserProfile) => {
-    setSelectedUser(user);
-    setIsProfileDialogOpen(true);
-  }, []);
-
-  const handleCloseProfileDialog = useCallback(() => {
-    setIsProfileDialogOpen(false);
-    setSelectedUser(null);
-  }, []);
+    openProfileModal(user);
+  }, [openProfileModal]);
 
   // Memoized loading component
   const LoadingComponent = useMemo(() => (
@@ -567,15 +625,33 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
           {leagueInfo && (
             <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900 rounded-md">
               <div className="flex items-center">
-                <div className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center mr-3">
-                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M6 6V5a3 3 0 013-3h2a3 3 0 013 3v1h2a2 2 0 012 2v3.57A22.952 22.952 0 0110 13a22.95 22.95 0 01-8-1.43V8a2 2 0 012-2h2zm2-1a1 1 0 011-1h2a1 1 0 011 1v1H8V5zm1 5a1 1 0 011-1h.01a1 1 0 110 2H10a1 1 0 01-1-1z" clipRule="evenodd" />
-                    <path d="M2 13.692V16a2 2 0 002 2h12a2 2 0 002-2v-2.308A24.974 24.974 0 0110 15c-2.796 0-5.487-.46-8-1.308z" />
-                  </svg>
+                {/* League Avatar */}
+                <div className="w-8 h-8 rounded-full mr-3 flex-shrink-0">
+                  {leagueInfo.photoURL ? (
+                    <img
+                      src={leagueInfo.photoURL}
+                      alt={leagueInfo.name}
+                      className="w-8 h-8 rounded-full object-cover border border-blue-200 dark:border-blue-800"
+                    />
+                  ) : (
+                    <div className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center">
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M6 6V5a3 3 0 013-3h2a3 3 0 013 3v1h2a2 2 0 012 2v3.57A22.952 22.952 0 0110 13a22.95 22.95 0 01-8-1.43V8a2 2 0 012-2h2zm2-1a1 1 0 011-1h2a1 1 0 011 1v1H8V5zm1 5a1 1 0 011-1h.01a1 1 0 110 2H10a1 1 0 01-1-1z" clipRule="evenodd" />
+                        <path d="M2 13.692V16a2 2 0 002 2h12a2 2 0 002-2v-2.308A24.974 24.974 0 0110 15c-2.796 0-5.487-.46-8-1.308z" />
+                      </svg>
+                    </div>
+                  )}
                 </div>
-                <div>
+                <div className="flex-1 min-w-0">
                   <p className="text-sm text-blue-600 dark:text-blue-400">League Game</p>
-                  <p className="font-medium text-blue-800 dark:text-blue-200">{leagueInfo.name}</p>
+                  <p className="font-medium text-blue-800 dark:text-blue-200 truncate">{leagueInfo.name}</p>
+                  {/* Add link to league if desired */}
+                  <Link 
+                    to={`/leagues/${leagueInfo.id}`}
+                    className="text-xs text-blue-500 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+                  >
+                    View League Details →
+                  </Link>
                 </div>
               </div>
             </div>
@@ -670,7 +746,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
                 <input
                   type="text"
                   value={rejectionReason}
-                  onChange={(e) => setRejectionReason(e.target.value)}
+                  onChange={(e) => setUiState(prev => ({ ...prev, rejectionReason: e.target.value }))}
                   placeholder="Reason for declining (optional)"
                   className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-700 dark:border-zinc-600"
                 />
@@ -786,7 +862,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
                       min="0"
                       max="999"
                       value={creatorScore}
-                      onChange={(e) => setCreatorScore(parseInt(e.target.value) || 0)}
+                      onChange={(e) => setScoreState(prev => ({ ...prev, creatorScore: parseInt(e.target.value) || 0 }))}
                       className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-700 dark:border-zinc-600"
                       required
                     />
@@ -800,7 +876,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
                       min="0"
                       max="999"
                       value={opponentScore}
-                      onChange={(e) => setOpponentScore(parseInt(e.target.value) || 0)}
+                      onChange={(e) => setScoreState(prev => ({ ...prev, opponentScore: parseInt(e.target.value) || 0 }))}
                       className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-700 dark:border-zinc-600"
                       required
                     />
@@ -874,11 +950,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
         {game.status === "completed" && game.scores && (
           <div className="mb-6">
             <h2 className="text-lg font-semibold mb-3">Final Results</h2>
-            <div className={`p-4 rounded-md ${
-              game.winner === auth.currentUser?.uid
-                ? "bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-900"
-                : "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900"
-            }`}>
+            <div className="p-4 rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900">
               <div className="flex justify-center items-center text-center mb-4">
                 <div className="text-center px-6">
                   <p className="text-sm">{creator?.displayName || "Creator"}</p>
@@ -894,9 +966,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
               </div>
               
               <p className="text-center font-medium">
-                {game.winner === (gameStatus?.isCreator ? game.createdBy : game.opponent)
-                  ? "You won this game!"
-                  : "You lost this game"}
+                Game completed
               </p>
             </div>
           </div>
@@ -935,12 +1005,12 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
         </CardContent>
       </Card>
 
-      {/* User Profile Dialog */}
-      <UserProfileDialog
+      {/* User Profile Modal */}
+      <UserProfileModal
         user={selectedUser}
-        isOpen={isProfileDialogOpen}
-        onClose={handleCloseProfileDialog}
-        stats={selectedUser ? {
+        isOpen={isProfileModalOpen}
+        onClose={closeProfileModal}
+        customStats={selectedUser ? {
           gamesPlayed: selectedUser.stats.gamesPlayed,
           gamesWon: selectedUser.stats.gamesWon,
           totalPoints: selectedUser.stats.totalPoints,

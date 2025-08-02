@@ -25,11 +25,8 @@ import {
   getCoreRowModel,
   getFilteredRowModel,
   getPaginationRowModel,
-  getSortedRowModel,
-  SortingState,
   useReactTable,
 } from "@tanstack/react-table";
-import { ArrowUpDown } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import {
   Table,
@@ -39,7 +36,7 @@ import {
   TableHeader,
   TableRow,
 } from "../../components/ui/table";
-import UserProfileDialog from "../../components/UserProfileDialog";
+import UserProfileModal, { useUserProfileModal } from "../../components/UserProfileModal";
 
 // Use the RankingEntry type from firebase.ts
 type RankingEntry = RankingEntryType;
@@ -102,54 +99,21 @@ const createRankingColumns = (
   },
   {
     accessorKey: "gamesPlayed",
-    header: ({ column }) => {
-      return (
-        <Button
-          variant="ghost"
-          onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
-          className="p-0 h-auto font-semibold hover:bg-transparent"
-        >
-          Games
-          <ArrowUpDown className="ml-2 h-4 w-4" />
-        </Button>
-      )
-    },
+    header: "Games",
     cell: ({ row }) => (
       <div className="text-xs sm:text-sm text-center">{row.getValue("gamesPlayed")}</div>
     ),
   },
   {
     accessorKey: "gamesWon",
-    header: ({ column }) => {
-      return (
-        <Button
-          variant="ghost"
-          onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
-          className="p-0 h-auto font-semibold hover:bg-transparent"
-        >
-          Wins
-          <ArrowUpDown className="ml-2 h-4 w-4" />
-        </Button>
-      )
-    },
+    header: "Wins",
     cell: ({ row }) => (
       <div className="text-xs sm:text-sm text-center">{row.getValue("gamesWon")}</div>
     ),
   },
   {
     accessorKey: "winPercentage",
-    header: ({ column }) => {
-      return (
-        <Button
-          variant="ghost"
-          onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
-          className="p-0 h-auto font-semibold hover:bg-transparent"
-        >
-          Win %
-          <ArrowUpDown className="ml-2 h-4 w-4" />
-        </Button>
-      )
-    },
+    header: "Win %",
     cell: ({ row }) => {
       const entry = row.original;
       const winPercentage = entry.gamesPlayed > 0 
@@ -164,33 +128,22 @@ const createRankingColumns = (
   },
   {
     accessorKey: "totalPoints",
-    header: ({ column }) => {
-      return (
-        <Button
-          variant="ghost"
-          onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
-          className="p-0 h-auto font-semibold hover:bg-transparent"
-        >
-          Points
-          <ArrowUpDown className="ml-2 h-4 w-4" />
-        </Button>
-      )
-    },
+    header: "Points",
     cell: ({ row }) => (
       <div className="text-xs sm:text-sm text-center font-mono">
         {row.getValue("totalPoints")}
       </div>
     ),
   },
-  {
-    accessorKey: "formattedTitle",
-    header: "Title",
-    cell: ({ row }) => (
-      <div className="text-xs sm:text-sm font-medium text-center">
-        {row.getValue("formattedTitle")}
-      </div>
-    ),
-  },
+  // {
+  //   accessorKey: "formattedTitle",
+  //   header: "Title",
+  //   cell: ({ row }) => (
+  //     <div className="text-xs sm:text-sm font-medium text-center">
+  //       {row.getValue("formattedTitle")}
+  //     </div>
+  //   ),
+  // },
 ];
 
 // Memoized Loading Component
@@ -223,7 +176,6 @@ const LeagueRankingsTable: React.FC<{
   onPlayerClick: (player: RankingEntry) => void;
 }> = memo(({ league, onPlayerClick }) => {
   // Table states
-  const [sorting, setSorting] = useState<SortingState>([])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
 
   // Helper function to create player display with avatar
@@ -263,14 +215,11 @@ const LeagueRankingsTable: React.FC<{
   const table = useReactTable({
     data: tableData,
     columns,
-    onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     getCoreRowModel: getCoreRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
-    getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
     state: {
-      sorting,
       columnFilters,
     },
   });
@@ -410,8 +359,9 @@ const Rankings: React.FC = () => {
   const [leagues, setLeagues] = useState<LeagueWithRankings[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedPlayer, setSelectedPlayer] = useState<UserProfile | null>(null);
-  const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false);
+  
+  // Use the user profile modal hook
+  const { isOpen: isProfileModalOpen, selectedUser, openModal: openProfileModal, closeModal: closeProfileModal } = useUserProfileModal();
 
   const fetchLeaguesWithRankings = useCallback(async () => {
     setLoading(true);
@@ -432,35 +382,26 @@ const Rankings: React.FC = () => {
     fetchLeaguesWithRankings();
   }, [fetchLeaguesWithRankings]);
 
-  // Handle player click
+  // Handle player click - simplified with new modal hook
   const handlePlayerClick = useCallback(async (player: RankingEntry) => {
     try {
       // Get the complete user profile to include all stats (winStreak, maxWinStreak, etc.)
       const fullUserProfile = await getUserProfile(player.userId);
       
       if (fullUserProfile) {
-        setSelectedPlayer(fullUserProfile);
+        openProfileModal(fullUserProfile);
       } else {
         // Fallback to converted profile if getUserProfile fails
         const userProfile = convertRankingEntryToUserProfile(player);
-        setSelectedPlayer(userProfile);
+        openProfileModal(userProfile);
       }
-      
-      setIsProfileDialogOpen(true);
     } catch (error) {
       console.error("Error fetching user profile:", error);
       // Fallback to converted profile on error
       const userProfile = convertRankingEntryToUserProfile(player);
-      setSelectedPlayer(userProfile);
-      setIsProfileDialogOpen(true);
+      openProfileModal(userProfile);
     }
-  }, []);
-
-  // Handle dialog close
-  const handleDialogClose = useCallback(() => {
-    setIsProfileDialogOpen(false);
-    setSelectedPlayer(null);
-  }, []);
+  }, [openProfileModal]);
 
   if (loading) {
     return <LoadingState />;
@@ -507,18 +448,18 @@ const Rankings: React.FC = () => {
         </div>
       )}
 
-      {/* User Profile Dialog */}
-      <UserProfileDialog
-        user={selectedPlayer}
-        isOpen={isProfileDialogOpen}
-        onClose={handleDialogClose}
-        stats={selectedPlayer ? {
-          gamesPlayed: selectedPlayer.stats.gamesPlayed,
-          gamesWon: selectedPlayer.stats.gamesWon,
-          totalPoints: selectedPlayer.stats.totalPoints,
-          rank: selectedPlayer.stats.globalRank,
-          winRate: selectedPlayer.stats.gamesPlayed > 0 
-            ? (selectedPlayer.stats.gamesWon / selectedPlayer.stats.gamesPlayed) * 100 
+      {/* User Profile Modal */}
+      <UserProfileModal
+        user={selectedUser}
+        isOpen={isProfileModalOpen}
+        onClose={closeProfileModal}
+        customStats={selectedUser ? {
+          gamesPlayed: selectedUser.stats.gamesPlayed,
+          gamesWon: selectedUser.stats.gamesWon,
+          totalPoints: selectedUser.stats.totalPoints,
+          rank: selectedUser.stats.globalRank,
+          winRate: selectedUser.stats.gamesPlayed > 0 
+            ? (selectedUser.stats.gamesWon / selectedUser.stats.gamesPlayed) * 100 
             : 0
         } : undefined}
       />

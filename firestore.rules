@@ -10,6 +10,11 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
     
+    function isJudge() {
+      return isAuthenticated() && 
+             request.auth.token.judge == true;
+    }
+    
     function isGameParticipant(gameData) {
       return isAuthenticated() && 
              (request.auth.uid == gameData.createdBy || 
@@ -25,6 +30,50 @@ service cloud.firestore {
       return (!('username' in currentData) && 'username' in newData) ||
              (!('username' in newData)) ||
              (currentData.username == newData.username);
+    }
+    
+    function isLeagueOwner(leagueData) {
+      return isAuthenticated() && 
+             request.auth.uid == leagueData.createdBy;
+    }
+    
+    function validateLeagueData() {
+      let data = request.resource.data;
+      return data.keys().hasAll(['name', 'description', 'createdBy', 'status', 'isPublic', 'settings', 'stats']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.description is string && data.description.size() <= 500 &&
+             data.createdBy == request.auth.uid &&
+             data.status in ['active', 'upcoming', 'completed', 'canceled'] &&
+             data.isPublic is bool &&
+             validateLeagueSettings(data.settings) &&
+             validateLeagueStats(data.stats);
+    }
+    
+    function validateLeagueSettings(settings) {
+      return settings.gameMode in ['single', 'double'] &&
+             settings.pointsToWin is int && settings.pointsToWin > 0 && settings.pointsToWin <= 500 &&
+             settings.maxPlayers is int && settings.maxPlayers >= 2 && settings.maxPlayers <= 64 &&
+             settings.allowJoinRequests is bool &&
+             settings.requireConfirmation is bool &&
+             ('ruleset' in settings) && settings.ruleset is string;
+    }
+    
+    function validateLeagueStats(stats) {
+      return stats.totalMembers is int && stats.totalMembers >= 0 &&
+             stats.totalMatches is int && stats.totalMatches >= 0 &&
+             stats.totalMatchesCompleted is int && stats.totalMatchesCompleted >= 0 &&
+             stats.activeMatches is int && stats.activeMatches >= 0;
+    }
+    
+    function validateSeasonData() {
+      let data = request.resource.data;
+      return data.keys().hasAll(['name', 'startDate', 'endDate', 'status', 'isDefault']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.startDate is timestamp &&
+             data.endDate is timestamp &&
+             data.startDate < data.endDate &&
+             data.status in ['active', 'upcoming', 'completed', 'archived'] &&
+             data.isDefault is bool;
     }
 
     // Users collection
@@ -48,31 +97,63 @@ service cloud.firestore {
       allow delete: if false; // Games cannot be deleted
     }
 
-    // Leagues collection
+    // Leagues collection - enhanced security
     match /leagues/{leagueId} {
+      // Anyone can read public leagues, members can read private leagues
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated(); // Add judge validation in app logic
-      allow update: if isAuthenticated(); // Add ownership validation in app logic
-      allow delete: if false;
+      
+      // Only judges can create leagues with proper validation
+      allow create: if isJudge() && validateLeagueData();
+      
+      // Only league owners or judges can update leagues
+      allow update: if isAuthenticated() && 
+                       (isLeagueOwner(resource.data) || isJudge()) &&
+                       // Ensure critical fields cannot be changed
+                       resource.data.createdBy == request.resource.data.createdBy &&
+                       resource.data.createdAt == request.resource.data.createdAt;
+      
+      // Only judges can delete leagues
+      allow delete: if isJudge();
     }
 
-    // League memberships collection
+    // League memberships collection - enhanced security
     match /leagueMemberships/{membershipId} {
       allow read: if isAuthenticated();
+      
+      // Users can join public leagues, judges can add anyone
       allow create: if isAuthenticated() && 
-                       request.auth.uid == request.resource.data.userId;
+                       (request.auth.uid == request.resource.data.userId || isJudge()) &&
+                       request.resource.data.userId is string &&
+                       request.resource.data.leagueId is string &&
+                       request.resource.data.status in ['active', 'pending'] &&
+                       request.resource.data.role in ['player', 'admin', 'owner'];
+      
+      // Users can update their own membership, judges can update any
       allow update: if isAuthenticated() && 
-                       request.auth.uid == resource.data.userId;
-      allow delete: if isAuthenticated() && 
-                       request.auth.uid == resource.data.userId;
+                       (request.auth.uid == resource.data.userId || isJudge());
+      
+      // Only judges can delete memberships
+      allow delete: if isJudge();
     }
 
-    // Seasons collection
+    // Seasons collection - enhanced security
     match /seasons/{seasonId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated(); // Add judge validation in app logic
-      allow update: if isAuthenticated(); // Add ownership validation in app logic
-      allow delete: if false;
+      
+      // Only judges can create seasons with proper validation
+      allow create: if isJudge() && validateSeasonData();
+      
+      // Only judges can update seasons
+      allow update: if isJudge();
+      
+      // Only judges can delete seasons
+      allow delete: if isJudge();
+    }
+
+    // Game configuration collection (read-only for most users)
+    match /gameConfig/{configId} {
+      allow read: if isAuthenticated();
+      allow write: if isJudge();
     }
 
     // Deny all other paths

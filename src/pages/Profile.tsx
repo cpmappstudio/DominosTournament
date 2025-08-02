@@ -6,6 +6,7 @@ import type { UserProfile } from "../firebase";
 import { getFirestore, doc, getDoc } from "firebase/firestore";
 import { LeagueCard, StatCard, TitleBadge } from "../components/ProfileComponents";
 import ProfileCard from "../components/ProfileCard";
+import { ExclamationCircleIcon } from "@heroicons/react/24/solid";
 import {
   Card,
   CardContent,
@@ -201,6 +202,8 @@ const LeaguesSkeleton = memo(() => (
 ));
 // import ProfileImageUploader from "../components/ProfileImageUploader"; // COMMENTED OUT until Firebase Storage upgrade
 // import StorageNotEnabledBanner from "../components/StorageNotEnabledBanner"; // COMMENTED OUT until Firebase Storage upgrade
+import ProfileImageUploader from "../components/ProfileImageUploader";
+import StorageNotEnabledBanner from "../components/StorageNotEnabledBanner";
 
 // Game result display type
 interface GameDisplay {
@@ -234,6 +237,7 @@ const Profile = memo<{ user?: User }>(({ user: propUser }) => {
   }[]>([]);
   const [loading, setLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState({ profile: true, games: true, leagues: true });
+  const [imageUploadError, setImageUploadError] = useState<string | null>(null);
 
   // Cache for opponent names to avoid repeated Firebase calls
   const opponentCacheRef = useRef<Map<string, string>>(new Map());
@@ -242,6 +246,30 @@ const Profile = memo<{ user?: User }>(({ user: propUser }) => {
   const handleGameClick = useCallback((gameId: string) => {
     navigate(`/game/${gameId}`);
   }, [navigate]);
+
+  // Handle profile image update
+  const handleImageUpdate = useCallback((newPhotoURL: string | null) => {
+    setUser(prevUser => {
+      if (prevUser) {
+        // Update the user state to reflect the new photo URL
+        return { ...prevUser, photoURL: newPhotoURL };
+      }
+      return prevUser;
+    });
+    
+    // Clear any previous upload errors
+    setImageUploadError(null);
+  }, []);
+
+  // Handle image upload errors
+  const handleImageError = useCallback((error: string) => {
+    setImageUploadError(error);
+    
+    // Clear error after 5 seconds
+    setTimeout(() => {
+      setImageUploadError(null);
+    }, 5000);
+  }, []);
 
   // Memoized data fetching functions with parallel loading
   const fetchUserData = useCallback(async (currentUser: User) => {
@@ -360,8 +388,18 @@ const Profile = memo<{ user?: User }>(({ user: propUser }) => {
     <div className="p-2 sm:p-4 lg:p-6 w-full lg:max-w-6xl lg:mx-auto dark:text-white">
       <h1 className="sr-only">Player Profile</h1>
 
-      {/* Storage Configuration Banner - COMMENTED OUT until Firebase Storage upgrade */}
-      {/* {showStorageBanner && <StorageNotEnabledBanner />} */}
+      {/* Storage Configuration Banner - Show if there are image upload errors */}
+      {imageUploadError && (
+        <div className="mb-6 p-4 bg-red-50 border border-red-200 text-red-700 rounded-lg dark:bg-red-900/20 dark:border-red-800 dark:text-red-300">
+          <div className="flex items-center">
+            <ExclamationCircleIcon className="h-5 w-5 mr-2 flex-shrink-0" />
+            <div>
+              <h4 className="font-medium">Image Upload Error</h4>
+              <p className="text-sm mt-1">{imageUploadError}</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Player Info Card */}
       <ProfileCard 
@@ -372,7 +410,17 @@ const Profile = memo<{ user?: User }>(({ user: propUser }) => {
       >
         <div className="flex flex-col sm:flex-row items-center sm:items-start gap-4 sm:gap-6">
           <div className="flex-shrink-0">
-            <ProfileImage user={user} />
+            {user ? (
+              <ProfileImageUploader
+                user={user}
+                onImageUpdate={handleImageUpdate}
+                onError={handleImageError}
+                size="lg"
+                className="w-20 h-20 sm:w-24 sm:h-24"
+              />
+            ) : (
+              <ProfileImage user={user!} />
+            )}
           </div>
           <div className="flex-grow min-w-0 text-center sm:text-left w-full sm:w-auto">
             <h2 className="text-xl sm:text-2xl font-semibold text-zinc-900 dark:text-white break-words">
