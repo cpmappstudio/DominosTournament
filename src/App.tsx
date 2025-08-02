@@ -1,79 +1,61 @@
-import { Avatar } from "@/components/avatar";
-import { ProfileAvatar } from "@/components/profile-avatar";
-import {
-  Dropdown,
-  DropdownButton,
-  DropdownDivider,
-  DropdownItem,
-  DropdownLabel,
-  DropdownMenu,
-} from "@/components/dropdown";
-import {
-  Navbar,
-  NavbarItem,
-  NavbarSection,
-  NavbarSpacer,
-} from "@/components/navbar";
-import {
-  Sidebar,
-  SidebarBody,
-  SidebarFooter,
-  SidebarHeader,
-  SidebarItem,
-  SidebarLabel,
-  SidebarSection,
-  SidebarSpacer,
-} from "@/components/sidebar";
-import { SidebarLayout } from "@/components/sidebar-layout";
-import {
-  ArrowRightStartOnRectangleIcon,
-  ChevronUpIcon,
-  UserIcon,
-} from "@heroicons/react/16/solid";
-import { HomeIcon, QuestionMarkCircleIcon } from "@heroicons/react/20/solid";
-import { TableCellsIcon } from "@heroicons/react/24/solid";
-import { ClipboardIcon } from "@heroicons/react/24/solid";
-import { PlayIcon } from "@heroicons/react/24/solid";
-import { Cog6ToothIcon } from "@heroicons/react/24/solid";
-import { useState, useEffect } from "react";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { AppLayout } from "@/components/AppLayout";
+import { ThemeProvider } from "./components/theme-provider";
+import { useState, useEffect, useCallback, useMemo, memo, lazy, Suspense } from "react";
 import { signOut, onAuthStateChanged, type User } from "firebase/auth";
-import { LoginButton } from "@/components/login-button";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import {
   auth,
   loginWithGoogle,
   getUserProfile,
   getNewInvitations,
 } from "./firebase";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import UsernameSetup from "@/components/auth/UsernameSetup";
-import NotificationIndicator from "@/components/NotificationIndicator";
-import { BellAlertIcon, TrophyIcon } from "@heroicons/react/24/solid";
 import { isJudge } from "./utils/auth";
 
-// Import page components
+// Direct imports for critical routes (instant loading)
 import Home from "./pages/Home";
 import Rules from "./pages/Rules";
-import Profile from "./pages/Profile";
-import CreateGame from "./pages/CreateGame";
-import GameDetail from "./pages/GameDetail";
-import GamesList from "./pages/GamesList";
 import Settings from "./pages/Settings";
+import CreateGame from "./pages/CreateGame";
 import Rankings from "./pages/rankings";
 import Leagues from "./pages/leagues";
-import CreateLeague from "./pages/leagues/create";
-import LeagueDetail from "./pages/leagues/detail";
-import JoinLeague from "./pages/leagues/join";
-import LeagueManagement from "./pages/leagues/manage";
 
-// Main App component with routing
-function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [needsUsername, setNeedsUsername] = useState(false);
+// Lazy load less critical pages
+const Profile = lazy(() => import("./pages/Profile"));
+const GameDetail = lazy(() => import("./pages/GameDetail"));
+const GamesList = lazy(() => import("./pages/GamesList"));
+const CreateLeague = lazy(() => import("./pages/leagues/create"));
+const LeagueDetail = lazy(() => import("./pages/leagues/detail"));
+const JoinLeague = lazy(() => import("./pages/leagues/join"));
+const LeagueManagement = lazy(() => import("./pages/leagues/manage"));
+
+// Preload strategy for lazy pages
+const preloadLazyPages = () => {
+  import("./pages/GamesList");
+  import("./pages/Profile");
+};
+
+// Loading component for Suspense
+const PageLoader = memo(() => (
+  <div className="flex h-64 w-full items-center justify-center">
+    <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-blue-500"></div>
+  </div>
+));
+PageLoader.displayName = 'PageLoader';
+
+// Types
+interface AppState {
+  user: User | null;
+  loading: boolean;
+  needsUsername: boolean;
+}
+
+// Custom hook for invitation management with optimized polling
+const useInvitationManager = (user: User | null) => {
   const [pendingInvitations, setPendingInvitations] = useState<number>(0);
 
-  // Function to fetch pending game invitations
-  const fetchPendingInvitations = async () => {
+  const fetchInvitations = useCallback(async () => {
     if (!user) {
       setPendingInvitations(0);
       return;
@@ -85,60 +67,130 @@ function App() {
     } catch (error) {
       console.error("Error fetching game invitations:", error);
     }
-  };
+  }, [user]);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setUser(currentUser);
+    fetchInvitations();
 
-      if (currentUser) {
-        // Check if user needs to set a username
-        const userProfile = await getUserProfile(currentUser.uid);
-        // Only show username setup if user has no profile or hasSetUsername is explicitly false
-        // Once a username is set, it can never be changed
-        setNeedsUsername(
-          userProfile
-            ? userProfile.hasSetUsername === false && !userProfile.username
-            : true,
-        );
+    if (!user) return;
+
+    // Smart polling: frequent when active, less when inactive
+    let intervalId: NodeJS.Timeout;
+    
+    const handleVisibilityChange = () => {
+      clearInterval(intervalId);
+      
+      if (document.visibilityState === 'visible') {
+        fetchInvitations();
+        intervalId = setInterval(fetchInvitations, 30000); // 30s
       } else {
-        setNeedsUsername(false);
+        intervalId = setInterval(fetchInvitations, 120000); // 2min
       }
+    };
 
-      setLoading(false);
+    handleVisibilityChange();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [user, fetchInvitations]);
+
+  return { pendingInvitations, refreshInvitations: fetchInvitations };
+};
+
+// Main App component with optimized state management
+const App = memo(() => {
+  const [appState, setAppState] = useState<AppState>({
+    user: null,
+    loading: true,
+    needsUsername: false,
+  });
+
+  const { pendingInvitations, refreshInvitations } = useInvitationManager(appState.user);
+
+  // Optimized auth state listener with preloading
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser) {
+        try {
+          const userProfile = await getUserProfile(currentUser.uid);
+          const needsUsernameSetup = userProfile
+            ? userProfile.hasSetUsername === false && !userProfile.username
+            : true;
+
+          setAppState(prev => ({
+            ...prev,
+            user: currentUser,
+            needsUsername: needsUsernameSetup,
+            loading: false,
+          }));
+
+          // Preload lazy pages when user is authenticated
+          if (!needsUsernameSetup) {
+            preloadLazyPages();
+          }
+        } catch (error) {
+          console.error("Error fetching user profile:", error);
+          setAppState(prev => ({
+            ...prev,
+            user: currentUser,
+            needsUsername: false,
+            loading: false,
+          }));
+        }
+      } else {
+        setAppState({
+          user: null,
+          loading: false,
+          needsUsername: false,
+        });
+      }
     });
 
     return () => unsubscribe();
   }, []);
 
-  // Fetch invitations when user changes
-  useEffect(() => {
-    fetchPendingInvitations();
-
-    // Set up interval to check for new invitations every 30 seconds
-    const intervalId = setInterval(fetchPendingInvitations, 30000);
-
-    return () => clearInterval(intervalId);
-  }, [user]);
-
-  // Login function using Google authentication
-  const handleGoogleLogin = async () => {
+  // Memoized auth handlers
+  const handleGoogleLogin = useCallback(async () => {
     try {
       await loginWithGoogle();
     } catch (error) {
       console.error("Error signing in with Google:", error);
     }
-  };
+  }, []);
 
-  const handleLogout = async () => {
+  const handleLogout = useCallback(async () => {
     try {
       await signOut(auth);
     } catch (error) {
       console.error("Error signing out:", error);
     }
-  };
+  }, []);
 
-  if (loading) {
+  const handleUsernameSetupComplete = useCallback(() => {
+    setAppState(prev => ({ ...prev, needsUsername: false }));
+  }, []);
+
+  // Memoized app props to prevent unnecessary re-renders
+  const appContentProps = useMemo(() => ({
+    user: appState.user,
+    needsUsername: appState.needsUsername,
+    pendingInvitations,
+    handleLogin: handleGoogleLogin,
+    handleLogout,
+    refreshInvitations,
+  }), [
+    appState.user,
+    appState.needsUsername,
+    pendingInvitations,
+    handleGoogleLogin,
+    handleLogout,
+    refreshInvitations,
+  ]);
+
+  if (appState.loading) {
     return (
       <div className="flex h-screen w-full items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
@@ -147,32 +199,45 @@ function App() {
   }
 
   return (
-    <BrowserRouter>
-      {/* Username setup is shown only once per user and cannot be changed after setup */}
-      {needsUsername && user ? (
-        <UsernameSetup user={user} onComplete={() => setNeedsUsername(false)} />
-      ) : null}
-      <AppContent
-        user={user}
-        needsUsername={needsUsername}
-        pendingInvitations={pendingInvitations}
-        handleLogin={handleGoogleLogin}
-        handleLogout={handleLogout}
-        refreshInvitations={fetchPendingInvitations}
-      />
-    </BrowserRouter>
+    <ErrorBoundary
+      onError={(error, errorInfo) => {
+        // Log critical errors for monitoring
+        console.error('App-level error:', error);
+        console.error('Error info:', errorInfo);
+        
+        // In production, send to error monitoring service
+        if (import.meta.env.PROD) {
+          // Example: Sentry.captureException(error);
+        }
+      }}
+    >
+      <ThemeProvider defaultTheme="light" storageKey="vite-ui-theme">
+        <BrowserRouter>
+          {/* Username setup is shown only once per user and cannot be changed after setup */}
+          {appState.needsUsername && appState.user && (
+            <UsernameSetup 
+              user={appState.user} 
+              onComplete={handleUsernameSetupComplete} 
+            />
+          )}
+          <AppContent {...appContentProps} />
+        </BrowserRouter>
+      </ThemeProvider>
+    </ErrorBoundary>
   );
-}
+});
 
-// Separate component for app content with routing
-const AppContent: React.FC<{
+App.displayName = 'App';
+
+// Memoized AppContent component
+const AppContent = memo<{
   user: User | null;
   needsUsername: boolean;
   pendingInvitations: number;
   handleLogin: () => Promise<void>;
   handleLogout: () => Promise<void>;
   refreshInvitations: () => Promise<void>;
-}> = ({
+}>(({
   user,
   needsUsername,
   pendingInvitations,
@@ -180,229 +245,99 @@ const AppContent: React.FC<{
   handleLogout,
   refreshInvitations,
 }) => {
-  return (
-    <SidebarLayout
-      navbar={
-        <Navbar>
-          <NavbarSpacer />
-          <NavbarSection>
-            <NavbarItem href="/create-game" aria-label="New Game">
-              <PlayIcon />
-            </NavbarItem>
-            <NavbarItem href="/rankings" aria-label="Rankings">
-              <TableCellsIcon className="h-5 w-5" />
-            </NavbarItem>
-            <NavbarItem href="/leagues" aria-label="Leagues">
-              <TrophyIcon className="h-5 w-5" />
-            </NavbarItem>
-            {user ? (
-              <Dropdown>
-                <DropdownButton as={NavbarItem}>
-                  <ProfileAvatar
-                    user={user}
-                    size="small"
-                    square
-                    alt={user.displayName || "User profile"}
-                  />
-                </DropdownButton>
-                <DropdownMenu className="min-w-64" anchor="bottom end">
-                  <DropdownItem href="/profile">
-                    <UserIcon />
-                    <DropdownLabel>My Profile</DropdownLabel>
-                  </DropdownItem>
-                  <DropdownItem href="/games">
-                    <PlayIcon className="h-5 w-5" />
-                    <DropdownLabel>My Games</DropdownLabel>
-                  </DropdownItem>
-                  <DropdownDivider />
-                  <DropdownItem onClick={handleLogout}>
-                    <ArrowRightStartOnRectangleIcon />
-                    <DropdownLabel>Sign out</DropdownLabel>
-                  </DropdownItem>
-                </DropdownMenu>
-              </Dropdown>
-            ) : (
-              <LoginButton onClick={handleLogin} variant="navbar" />
-            )}
-          </NavbarSection>
-        </Navbar>
-      }
-      sidebar={
-        <Sidebar>
-          <SidebarHeader>
-            <Dropdown>
-              <SidebarItem href="/" className="lg:mb-2.5">
-                <Avatar src="/usa-federation.png" square className="w-32 h-32" />
-                <SidebarLabel>USA Domino</SidebarLabel>
-              </SidebarItem>
-            </Dropdown>
-            <SidebarSection className="max-lg:hidden">
-              <SidebarItem href="/create-game">
-                <PlayIcon />
-                <SidebarLabel>New game</SidebarLabel>
-              </SidebarItem>
-              <SidebarItem href="/rankings">
-                <TableCellsIcon className="h-5 w-5" />
-                <SidebarLabel>Rankings</SidebarLabel>
-              </SidebarItem>
-              <SidebarItem href="/leagues">
-                <TrophyIcon className="h-5 w-5" />
-                <SidebarLabel>Leagues</SidebarLabel>
-              </SidebarItem>
-            </SidebarSection>
-          </SidebarHeader>
-          <SidebarBody>
-            <SidebarSection>
-              <SidebarItem href="/">
-                <HomeIcon />
-                <SidebarLabel>Home</SidebarLabel>
-              </SidebarItem>
-              <SidebarItem href="/games" onClick={refreshInvitations}>
-                <div className="relative">
-                  <PlayIcon className="h-5 w-5" />
-                  {pendingInvitations > 0 && (
-                    <NotificationIndicator
-                      count={pendingInvitations}
-                      size="small"
-                    />
-                  )}
-                </div>
-                <SidebarLabel>My Games</SidebarLabel>
-              </SidebarItem>
+  // Authentication check helper
+  const isAuthenticated = user && !needsUsername;
 
-              <SidebarItem href="/settings">
-                <Cog6ToothIcon className="h-5 w-5" />
-                <SidebarLabel>Settings</SidebarLabel>
-              </SidebarItem>
-            </SidebarSection>
-            <SidebarSpacer />
-            <SidebarSection>
-              <SidebarItem href="/rules">
-                <QuestionMarkCircleIcon />
-                <SidebarLabel>Rules</SidebarLabel>
-              </SidebarItem>
-            </SidebarSection>
-          </SidebarBody>
-          <SidebarFooter className="max-lg:hidden">
-            {user ? (
-              <Dropdown>
-                <DropdownButton as={SidebarItem}>
-                  <span className="flex min-w-0 items-center gap-3">
-                    <ProfileAvatar
-                      user={user}
-                      size="medium"
-                      square
-                      alt={user.displayName || "User profile"}
-                    />
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm/5 font-medium text-zinc-950 dark:text-white">
-                        {user.displayName || "User"}
-                      </span>
-                      <span className="block truncate text-xs/5 font-normal text-zinc-500 dark:text-zinc-400">
-                        {user.email || ""}
-                      </span>
-                    </span>
-                  </span>
-                  <ChevronUpIcon />
-                </DropdownButton>
-                <DropdownMenu className="min-w-64" anchor="top start">
-                  <DropdownItem href="/profile">
-                    <UserIcon />
-                    <DropdownLabel>My profile</DropdownLabel>
-                  </DropdownItem>
-                  <DropdownDivider />
-                  <DropdownItem onClick={handleLogout}>
-                    <ArrowRightStartOnRectangleIcon />
-                    <DropdownLabel>Sign out</DropdownLabel>
-                  </DropdownItem>
-                </DropdownMenu>
-              </Dropdown>
-            ) : (
-              <LoginButton onClick={handleLogin} />
-            )}
-          </SidebarFooter>
-        </Sidebar>
-      }
+  return (
+    <AppLayout
+      user={user}
+      pendingInvitations={pendingInvitations}
+      handleLogin={handleLogin}
+      handleLogout={handleLogout}
+      refreshInvitations={refreshInvitations}
     >
       <Routes>
+        {/* Public routes */}
         <Route path="/" element={<Home />} />
         <Route path="/rules" element={<Rules />} />
+        <Route path="/rankings" element={<Rankings />} />
+        <Route path="/leagues" element={<Leagues />} />
+
+        {/* Protected routes */}
         <Route
           path="/profile"
-          element={user && !needsUsername ? <Profile /> : <Navigate to="/" />}
+          element={isAuthenticated ? (
+            <Suspense fallback={<PageLoader />}>
+              <Profile />
+            </Suspense>
+          ) : <Navigate to="/" />}
         />
-        <Route path="/rankings" element={<Rankings />} />
         <Route
           path="/create-game"
-          element={
-            user && !needsUsername ? <CreateGame /> : <Navigate to="/" />
-          }
-        />
-        <Route
-          path="/games"
-          element={
-            user && !needsUsername ? (
-              <GamesList refreshNotifications={refreshInvitations} />
-            ) : (
-              <Navigate to="/" />
-            )
-          }
-        />
-        <Route
-          path="/game/:id"
-          element={
-            user && !needsUsername ? (
-              <GameDetail refreshNotifications={refreshInvitations} />
-            ) : (
-              <Navigate to="/" />
-            )
-          }
+          element={isAuthenticated ? <CreateGame /> : <Navigate to="/" />}
         />
         <Route
           path="/settings"
-          element={user && !needsUsername ? <Settings /> : <Navigate to="/" />}
+          element={isAuthenticated ? <Settings /> : <Navigate to="/" />}
         />
-        <Route path="/leagues" element={<Leagues />} />
+        <Route
+          path="/games"
+          element={isAuthenticated ? (
+            <Suspense fallback={<PageLoader />}>
+              <GamesList refreshNotifications={refreshInvitations} />
+            </Suspense>
+          ) : <Navigate to="/" />}
+        />
+        <Route
+          path="/game/:id"
+          element={isAuthenticated ? (
+            <Suspense fallback={<PageLoader />}>
+              <GameDetail refreshNotifications={refreshInvitations} />
+            </Suspense>
+          ) : <Navigate to="/" />}
+        />
+
+        {/* League routes */}
         <Route
           path="/leagues/create"
-          element={
-            user && !needsUsername && isJudge(user) ? (
+          element={isAuthenticated && isJudge(user) ? (
+            <Suspense fallback={<PageLoader />}>
               <CreateLeague />
-            ) : (
-              <Navigate to="/leagues" />
-            )
-          }
+            </Suspense>
+          ) : <Navigate to="/leagues" />}
         />
         <Route
           path="/leagues/:id"
-          element={
-            user && !needsUsername ? (
+          element={isAuthenticated ? (
+            <Suspense fallback={<PageLoader />}>
               <LeagueDetail />
-            ) : (
-              <Navigate to="/leagues" />
-            )
-          }
+            </Suspense>
+          ) : <Navigate to="/leagues" />}
         />
         <Route
           path="/leagues/join/:id"
-          element={
-            user && !needsUsername ? <JoinLeague /> : <Navigate to="/leagues" />
-          }
+          element={isAuthenticated ? (
+            <Suspense fallback={<PageLoader />}>
+              <JoinLeague />
+            </Suspense>
+          ) : <Navigate to="/leagues" />}
         />
         <Route
           path="/leagues/manage/:id"
-          element={
-            user && !needsUsername ? (
+          element={isAuthenticated ? (
+            <Suspense fallback={<PageLoader />}>
               <LeagueManagement />
-            ) : (
-              <Navigate to="/leagues" />
-            )
-          }
+            </Suspense>
+          ) : <Navigate to="/leagues" />}
         />
+
+        {/* Fallback */}
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
-    </SidebarLayout>
+    </AppLayout>
   );
-};
+});
+
+AppContent.displayName = 'AppContent';
 
 export default App;

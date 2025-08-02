@@ -543,7 +543,7 @@ const LeagueManagement: React.FC = () => {
 
   if (!league) {
     return (
-      <div className="p-6 max-w-4xl mx-auto">
+      <div className="p-6 max-w-6xl mx-auto">
         <div className="bg-red-100 border-l-4 border-red-500 p-4 mb-4">
           <div className="flex">
             <div className="ml-3">
@@ -559,7 +559,7 @@ const LeagueManagement: React.FC = () => {
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto text-white">
+    <div className="p-6 max-w-6xl mx-auto dark:text-white">
       {/* Delete League Confirmation Modal */}
       <ConfirmModal
         isOpen={showDeleteModal}
@@ -618,7 +618,7 @@ const LeagueManagement: React.FC = () => {
       </div>
 
       {/* Tabs */}
-      <div className="bg-white dark:bg-zinc-800 rounded-lg shadow mb-6 ">
+      <div className=" dark:bg-zinc-800 rounded-lg shadow mb-6 ">
         <div className="flex border-b border-gray-200 dark:border-zinc-700 overflow-x-auto scrollbar-hide">
           <button
             className={`px-4 sm:px-6 py-3 font-medium text-sm border-b-2 whitespace-nowrap flex-shrink-0 ${

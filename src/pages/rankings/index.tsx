@@ -16,6 +16,7 @@ import {
   getDefaultSeason,
 } from "../../firebase";
 import { Season } from "../../models/league";
+import CustomSelect from "../../components/custom-select";
 
 // Use the RankingEntry type from firebase.ts
 type RankingEntry = RankingEntryType;
@@ -484,7 +485,7 @@ const Rankings: React.FC = () => {
     : null;
 
   return (
-    <div className="p-6 max-w-6xl mx-auto text-white">
+    <div className="p-6 max-w-6xl mx-auto dark:text-white">
       <div className="flex justify-between items-center mb-6">
         <div>
           <h1 className="text-3xl font-bold">Player Rankings</h1>
@@ -562,97 +563,79 @@ const Rankings: React.FC = () => {
         </div>
         <div className="p-6 grid grid-cols-1 md:grid-cols-4 gap-4">
           {/* League Filter */}
-          <div>
-            <label className="block text-sm font-medium mb-1">League</label>
-            <select
-              value={filter.leagueId || "global"}
-              onChange={(e) =>
-                handleFilterChange(
-                  "leagueId",
-                  e.target.value === "global" ? null : e.target.value,
-                )
-              }
-              className={`w-full p-2 border rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:border-zinc-600 ${
-                filter.leagueId
-                  ? "border-blue-500 bg-blue-50 dark:bg-blue-900/10"
-                  : "border-gray-300 dark:bg-zinc-700"
-              }`}
-            >
-              <option value="global">Global Ranking</option>
-              {leagues.map((league) => (
-                <option key={league.id} value={league.id}>
-                  {league.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          <CustomSelect
+            id="league-filter"
+            name="league"
+            label="League"
+            value={filter.leagueId || "global"}
+            onChange={(value) =>
+              handleFilterChange(
+                "leagueId",
+                value === "global" ? null : value,
+              )
+            }
+            options={[
+              { value: "global", label: "Global Ranking" },
+              ...leagues.map((league) => ({
+                value: league.id,
+                label: league.name,
+              })),
+            ]}
+            highlighted={!!filter.leagueId}
+          />
 
           {/* Season Filter */}
-          <div>
-            <label className="block text-sm font-medium mb-1">Season</label>
-            <select
-              value={filter.seasonId || "all"}
-              onChange={(e) =>
-                handleFilterChange(
-                  "seasonId",
-                  e.target.value === "all" ? null : e.target.value,
-                )
-              }
-              className={`w-full p-2 border rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:border-zinc-600 ${
-                filter.seasonId
-                  ? "border-orange-500 bg-orange-50 dark:bg-orange-900/10"
-                  : "border-gray-300 dark:bg-zinc-700"
-              }`}
-            >
-              <option value="all">All Seasons</option>
-              {seasons.map((season) => (
-                <option key={season.id} value={season.id}>
-                  {season.name} {season.status === "active" ? "(Active)" : ""}
-                </option>
-              ))}
-            </select>
-          </div>
+          <CustomSelect
+            id="season-filter"
+            name="season"
+            label="Season"
+            value={filter.seasonId || "all"}
+            onChange={(value) =>
+              handleFilterChange(
+                "seasonId",
+                value === "all" ? null : value,
+              )
+            }
+            options={[
+              { value: "all", label: "All Seasons" },
+              ...seasons.map((season) => ({
+                value: season.id,
+                label: `${season.name}${season.status === "active" ? " (Active)" : ""}`,
+              })),
+            ]}
+            highlighted={!!filter.seasonId}
+          />
 
           {/* Time Frame Filter */}
-          <div>
-            <label className="block text-sm font-medium mb-1">
-              Time Frame {filter.seasonId ? "(Disabled)" : ""}
-            </label>
-            <select
-              value={filter.timeFrame}
-              onChange={(e) => handleFilterChange("timeFrame", e.target.value)}
-              disabled={!!filter.seasonId}
-              className={`w-full p-2 border rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:border-zinc-600 ${
-                filter.seasonId 
-                  ? "opacity-50 cursor-not-allowed bg-gray-100 dark:bg-zinc-800"
-                  : filter.timeFrame !== "all"
-                    ? "border-green-500 bg-green-50 dark:bg-green-900/10"
-                    : "border-gray-300 dark:bg-zinc-700"
-              }`}
-            >
-              <option value="all">All Time</option>
-              <option value="month">Last Month</option>
-              <option value="week">Last Week</option>
-            </select>
-          </div>
+          <CustomSelect
+            id="timeframe-filter"
+            name="timeframe"
+            label={`Time Frame${filter.seasonId ? " (Disabled)" : ""}`}
+            value={filter.timeFrame}
+            onChange={(value) => handleFilterChange("timeFrame", value)}
+            disabled={!!filter.seasonId}
+            options={[
+              { value: "all", label: "All Time" },
+              { value: "month", label: "Last Month" },
+              { value: "week", label: "Last Week" },
+            ]}
+            highlighted={filter.timeFrame !== "all" && !filter.seasonId}
+          />
 
           {/* Game Mode Filter */}
-          <div>
-            <label className="block text-sm font-medium mb-1">Game Mode</label>
-            <select
-              value={filter.gameMode}
-              onChange={(e) => handleFilterChange("gameMode", e.target.value)}
-              className={`w-full p-2 border rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:border-zinc-600 ${
-                filter.gameMode !== "all"
-                  ? "border-purple-500 bg-purple-50 dark:bg-purple-900/10"
-                  : "border-gray-300 dark:bg-zinc-700"
-              }`}
-            >
-              <option value="all">All Modes</option>
-              <option value="teams">Teams Mode</option>
-              <option value="individual">Individual Mode</option>
-            </select>
-          </div>
+          <CustomSelect
+            id="gamemode-filter"
+            name="gamemode"
+            label="Game Mode"
+            value={filter.gameMode}
+            onChange={(value) => handleFilterChange("gameMode", value)}
+            options={[
+              { value: "all", label: "All Modes" },
+              { value: "teams", label: "Teams Mode" },
+              { value: "individual", label: "Individual Mode" },
+            ]}
+            highlighted={filter.gameMode !== "all"}
+          />
         </div>
       </div>
 

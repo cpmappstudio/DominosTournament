@@ -405,7 +405,7 @@ const LeagueDetail: React.FC = () => {
 
   if (error || !league) {
     return (
-      <div className="p-6 max-w-4xl mx-auto">
+      <div className="p-6 max-w-6xl mx-auto">
         <div className="bg-red-100 border-l-4 border-red-500 p-4 mb-4">
           <div className="flex">
             <div className="ml-3">
@@ -421,7 +421,7 @@ const LeagueDetail: React.FC = () => {
   }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto text-white">
+    <div className="p-6 max-w-6xl mx-auto dark:text-white">
       {/* League Header */}
       <div className="bg-white dark:bg-zinc-800 rounded-lg shadow overflow-hidden mb-6">
         <div className="h-40 bg-gradient-to-r from-blue-500 to-indigo-600 relative">

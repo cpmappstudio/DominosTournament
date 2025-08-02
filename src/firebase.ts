@@ -26,31 +26,24 @@ import {
 //   deleteObject 
 // } from "firebase/storage";
 import { Season } from './models/league';
+import config from './config';
 
-// Firebase configuration
-const firebaseConfig = {
-  apiKey: "AIzaSyC3Ox8ePVNmRALd0aSfXMOy2pfgNw6H45Y",
-  authDomain: "domino-federation.firebaseapp.com",
-  projectId: "domino-federation",
-  storageBucket: "domino-federation.firebasestorage.app",
-  messagingSenderId: "960409936120",
-  appId: "1:960409936120:web:6fde8f4143c1981c621b0d",
-  measurementId: "G-7DE9FKB4QP",
-};
-
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
+// Initialize Firebase with secure configuration
+const app = initializeApp(config.firebase);
 const auth = getAuth(app);
 const db = getFirestore(app);
 // const storage = getStorage(app); // COMMENTED OUT until Firebase Storage upgrade
 const googleProvider = new GoogleAuthProvider();
+
+// Query limit from configuration
+const DEFAULT_QUERY_LIMIT = config.maxQueryLimit;
 
 // Collection references
 const usersCollection = collection(db, "users");
 const gamesCollection = collection(db, "games");
 
 // Type definitions
-export type GameMode = "individual" | "teams";
+export type GameMode = "single" | "double";
 export type GameStatus = "invited" | "accepted" | "rejected" | "in_progress" | "waiting_confirmation" | "completed";
 
 // User profile interface
@@ -167,14 +160,16 @@ export const searchUsers = async (searchTerm: string): Promise<UserProfile[]> =>
     const usernameQuery = query(
       usersCollection,
       where("username", ">=", searchTerm.toLowerCase()),
-      where("username", "<=", searchTerm.toLowerCase() + '\uf8ff')
+      where("username", "<=", searchTerm.toLowerCase() + '\uf8ff'),
+      limit(DEFAULT_QUERY_LIMIT)
     );
     
     // Then by display name as fallback
     const displayNameQuery = query(
       usersCollection,
       where("displayName", ">=", searchTerm),
-      where("displayName", "<=", searchTerm + '\uf8ff')
+      where("displayName", "<=", searchTerm + '\uf8ff'),
+      limit(DEFAULT_QUERY_LIMIT)
     );
     
     const [usernameSnapshot, displayNameSnapshot] = await Promise.all([
@@ -197,7 +192,8 @@ export const searchUsers = async (searchTerm: string): Promise<UserProfile[]> =>
     
     // Convert to array and filter out current user
     return Array.from(results.values())
-      .filter(user => user.uid !== auth.currentUser?.uid);
+      .filter(user => user.uid !== auth.currentUser?.uid)
+      .slice(0, DEFAULT_QUERY_LIMIT); // Additional safety limit
   } catch (error) {
     console.error("Error searching users:", error);
     return [];
@@ -277,13 +273,15 @@ export const getUserGames = async (): Promise<Game[]> => {
     const creatorQuery = query(
       gamesCollection,
       where("createdBy", "==", userId),
-      orderBy("updatedAt", "desc")
+      orderBy("updatedAt", "desc"),
+      limit(DEFAULT_QUERY_LIMIT)
     );
     
     const opponentQuery = query(
       gamesCollection,
       where("opponent", "==", userId),
-      orderBy("updatedAt", "desc")
+      orderBy("updatedAt", "desc"),
+      limit(DEFAULT_QUERY_LIMIT)
     );
     
     const [creatorSnap, opponentSnap] = await Promise.all([
@@ -294,10 +292,10 @@ export const getUserGames = async (): Promise<Game[]> => {
     const creatorGames = creatorSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Game));
     const opponentGames = opponentSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Game));
     
-    // Combine and sort by updatedAt
-    return [...creatorGames, ...opponentGames].sort(
-      (a, b) => b.updatedAt.toMillis() - a.updatedAt.toMillis()
-    );
+    // Combine and sort by updatedAt, then limit again for safety
+    return [...creatorGames, ...opponentGames]
+      .sort((a, b) => b.updatedAt.toMillis() - a.updatedAt.toMillis())
+      .slice(0, DEFAULT_QUERY_LIMIT);
   } catch (error) {
     console.error("Error getting user games:", error);
     return [];
@@ -315,14 +313,16 @@ export const isPlayerInActiveGame = async (userId: string): Promise<boolean> => 
     const creatorQuery = query(
       gamesCollection,
       where("createdBy", "==", userId),
-      where("status", "in", activeStatuses)
+      where("status", "in", activeStatuses),
+      limit(1) // Only need to know if any exist
     );
     
     // Check games where user is opponent
     const opponentQuery = query(
       gamesCollection,
       where("opponent", "==", userId),
-      where("status", "in", activeStatuses)
+      where("status", "in", activeStatuses),
+      limit(1) // Only need to know if any exist
     );
     
     const [creatorSnap, opponentSnap] = await Promise.all([
@@ -350,7 +350,8 @@ export const getNewInvitations = async (): Promise<Game[]> => {
       gamesCollection,
       where("opponent", "==", userId),
       where("status", "==", "invited"),
-      orderBy("createdAt", "desc")
+      orderBy("createdAt", "desc"),
+      limit(DEFAULT_QUERY_LIMIT)
     );
     
     const snapshot = await getDocs(invitationsQuery);
@@ -691,7 +692,8 @@ export const getGlobalRankings = async (): Promise<RankingEntry[]> => {
     const usersQuery = query(
       usersCollection,
       where("stats.gamesPlayed", ">", 0),
-      orderBy("stats.gamesPlayed", "desc")
+      orderBy("stats.gamesPlayed", "desc"),
+      limit(DEFAULT_QUERY_LIMIT)
     );
     
     const querySnapshot = await getDocs(usersQuery);
@@ -776,7 +778,8 @@ export const getRankingsByTimePeriod = async (period: 'week' | 'month' | 'all'):
     const gamesQuery = query(
       collection(db, "games"),
       where("completedAt", ">=", startTimestamp),
-      where("status", "==", "completed")
+      where("status", "==", "completed"),
+      limit(DEFAULT_QUERY_LIMIT)
     );
     
     const gamesSnapshot = await getDocs(gamesQuery);
@@ -884,7 +887,8 @@ export const updateGlobalRankings = async (): Promise<boolean> => {
     // Get all users with at least one game played
     const usersQuery = query(
       usersCollection,
-      where("stats.gamesPlayed", ">", 0)
+      where("stats.gamesPlayed", ">", 0),
+      limit(DEFAULT_QUERY_LIMIT)
     );
     
     const querySnapshot = await getDocs(usersQuery);
@@ -993,7 +997,8 @@ export const getUserLeagues = async (): Promise<{id: string, name: string, setti
     const membershipsQuery = query(
       collection(db, "leagueMemberships"),
       where("userId", "==", auth.currentUser.uid),
-      where("status", "==", "active")
+      where("status", "==", "active"),
+      limit(DEFAULT_QUERY_LIMIT)
     );
     
     const membershipsSnap = await getDocs(membershipsQuery);
@@ -1001,19 +1006,22 @@ export const getUserLeagues = async (): Promise<{id: string, name: string, setti
     
     if (leagueIds.length === 0) return [];
     
-    // Get league details
+    // Get all active leagues, then filter by IDs
     const leaguesQuery = query(
       collection(db, "leagues"),
-      where("id", "in", leagueIds),
-      where("status", "==", "active")
+      where("status", "==", "active"),
+      limit(DEFAULT_QUERY_LIMIT)
     );
-    
     const leaguesSnap = await getDocs(leaguesQuery);
-    return leaguesSnap.docs.map(doc => ({
-      id: doc.id,
-      name: doc.data().name,
-      settings: doc.data().settings
-    }));
+    return leaguesSnap.docs
+      .filter(doc => leagueIds.includes(doc.id))
+      .map(doc => ({
+        id: doc.id,
+        name: doc.data().name,
+        settings: doc.data().settings,
+        photoURL: doc.data().photoURL || null,
+        description: doc.data().description || ""
+      }));
   } catch (error) {
     console.error("Error getting user leagues:", error);
     return [];
@@ -1026,7 +1034,8 @@ export const getAllActiveLeagues = async (): Promise<{id: string, name: string, 
     const leaguesQuery = query(
       collection(db, "leagues"),
       where("status", "==", "active"),
-      orderBy("name", "asc")
+      orderBy("name", "asc"),
+      limit(DEFAULT_QUERY_LIMIT)
     );
     
     const leaguesSnap = await getDocs(leaguesQuery);

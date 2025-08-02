@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useMemo, memo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   auth,
@@ -20,13 +20,248 @@ import {
 } from "firebase/firestore";
 import {
   BellAlertIcon,
-  CheckCircleIcon,
-  XCircleIcon,
 } from "@heroicons/react/24/solid";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "../components/ui/card";
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+} from "../components/ui/avatar";
+import {
+  ColumnDef,
+  ColumnFiltersState,
+  flexRender,
+  getCoreRowModel,
+  getFilteredRowModel,
+  getPaginationRowModel,
+  getSortedRowModel,
+  SortingState,
+  useReactTable,
+} from "@tanstack/react-table";
+import { ArrowUpDown } from "lucide-react";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/ui/table";
 
 interface GamesListProps {
   refreshNotifications?: () => Promise<void>;
 }
+
+// Extended Game type for table display
+interface GameTableRow extends Game {
+  opponentName: string;
+  opponentPhotoURL?: string;
+  opponentInitials: string;
+  formattedDate: string;
+  statusDisplay: string;
+  statusColor: string;
+  gameInfo: string;
+  result?: "Won" | "Lost" | null;
+  score?: {
+    player: number;
+    opponent: number;
+  };
+}
+
+// Define columns for the games table
+const createColumns = (
+  handleAcceptInvitation: (gameId: string) => void,
+  handleRejectInvitation: (gameId: string) => void,
+  handleStartGame: (gameId: string) => void,
+  actionInProgress: string | null,
+  isInActiveGame: boolean,
+  navigate: (path: string) => void
+): ColumnDef<GameTableRow>[] => [
+  {
+    accessorKey: "formattedDate",
+    header: ({ column }) => {
+      return (
+        <Button
+          variant="ghost"
+          onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+          className="p-0 h-auto font-semibold hover:bg-transparent"
+        >
+          Date
+          <ArrowUpDown className="ml-2 h-4 w-4" />
+        </Button>
+      )
+    },
+    cell: ({ row }) => (
+      <div className="text-xs sm:text-sm whitespace-nowrap">{row.getValue("formattedDate")}</div>
+    ),
+  },
+  {
+    accessorKey: "opponentName",
+    header: ({ column }) => {
+      return (
+        <Button
+          variant="ghost"
+          onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+          className="p-0 h-auto font-semibold hover:bg-transparent"
+        >
+          Opponent
+          <ArrowUpDown className="ml-2 h-4 w-4" />
+        </Button>
+      )
+    },
+    cell: ({ row }) => {
+      const game = row.original;
+      
+      return (
+        <div className="font-medium text-xs sm:text-sm flex items-center space-x-2">
+          <Avatar className="h-6 w-6 sm:h-8 sm:w-8">
+            <AvatarImage src={game.opponentPhotoURL || undefined} alt={game.opponentName} />
+            <AvatarFallback className="text-xs">{game.opponentInitials}</AvatarFallback>
+          </Avatar>
+          <div className="truncate max-w-20 sm:max-w-none" title={game.opponentName}>
+            {game.opponentName}
+          </div>
+        </div>
+      );
+    },
+  },
+  {
+    accessorKey: "gameInfo",
+    header: "Type",
+    cell: ({ row }) => (
+      <div className="text-xs sm:text-sm text-gray-600 dark:text-gray-400 whitespace-nowrap capitalize">
+        {row.getValue("gameInfo")}
+      </div>
+    ),
+  },
+  {
+    accessorKey: "status",
+    header: ({ column }) => {
+      return (
+        <Button
+          variant="ghost"
+          onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+          className="p-0 h-auto font-semibold hover:bg-transparent"
+        >
+          Status
+          <ArrowUpDown className="ml-2 h-4 w-4" />
+        </Button>
+      )
+    },
+    cell: ({ row }) => {
+      const game = row.original;
+      return (
+        <span className={`inline-block px-1.5 sm:px-2 py-0.5 sm:py-1 text-xs font-medium rounded-full ${game.statusColor}`}>
+          {game.statusDisplay}
+        </span>
+      );
+    },
+  },
+  {
+    accessorKey: "result",
+    header: "Result",
+    cell: ({ row }) => {
+      const result = row.getValue("result") as string | null;
+      if (!result) return null;
+      
+      return (
+        <span className={`inline-block px-1.5 sm:px-2 py-0.5 sm:py-1 text-xs font-medium rounded ${
+          result === "Won" 
+            ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100"
+            : "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100"
+        }`}>
+          {result === "Won" ? "W" : "L"}
+          <span className="hidden sm:inline">
+            {result === "Won" ? "on" : "ost"}
+          </span>
+        </span>
+      );
+    },
+  },
+  {
+    accessorKey: "score",
+    header: "Score",
+    cell: ({ row }) => {
+      const game = row.original;
+      if (game.status !== "completed" || !game.scores) return null;
+      
+      const isCreator = auth.currentUser?.uid === game.createdBy;
+      const playerScore = isCreator ? game.scores.creator : game.scores.opponent;
+      const opponentScore = isCreator ? game.scores.opponent : game.scores.creator;
+      
+      return (
+        <div className="font-mono text-xs sm:text-sm whitespace-nowrap">
+          {playerScore || 0} - {opponentScore || 0}
+        </div>
+      );
+    },
+  },
+];
+
+// Memoized Loading Component
+const LoadingState = memo(() => (
+  <div className="p-2 sm:p-4 lg:p-6 w-full lg:max-w-6xl lg:mx-auto">
+    <h1 className="sr-only">My Games</h1>
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-xl sm:text-2xl">My Games</CardTitle>
+      </CardHeader>
+      <CardContent className="flex justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
+      </CardContent>
+    </Card>
+  </div>
+));
+
+// Memoized Unauthenticated State
+const UnauthenticatedState = memo(({ onNavigateHome }: { onNavigateHome: () => void }) => (
+  <div className="p-2 sm:p-4 lg:p-6 w-full lg:max-w-6xl lg:mx-auto">
+    <h1 className="sr-only">My Games</h1>
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-xl sm:text-2xl">My Games</CardTitle>
+      </CardHeader>
+      <CardContent className="text-center">
+        <p className="mb-4">Please sign in to view your games.</p>
+        <Button onClick={onNavigateHome}>
+          Go to Home
+        </Button>
+      </CardContent>
+    </Card>
+  </div>
+));
+
+// Memoized No Games State
+const NoGamesState = memo(({ isInActiveGame, onCreateGame }: { 
+  isInActiveGame: boolean; 
+  onCreateGame: (e: React.MouseEvent) => void;
+}) => (
+  <Card>
+    <CardContent className="text-center pt-6">
+      <p className="mb-4">You don't have any games yet.</p>
+      <Link
+        to="/create-game"
+        className={`inline-block ${
+          isInActiveGame
+            ? "pointer-events-none opacity-50"
+            : ""
+        }`}
+        onClick={onCreateGame}
+      >
+        <Button disabled={isInActiveGame}>
+          Create Your First Game
+        </Button>
+      </Link>
+    </CardContent>
+  </Card>
+));
 
 const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
   const navigate = useNavigate();
@@ -40,8 +275,13 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
   const [isInActiveGame, setIsInActiveGame] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Function to refresh games list
-  const refreshGames = async () => {
+  // Table states
+  const [sorting, setSorting] = useState<SortingState>([])
+  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
+  const [globalFilter, setGlobalFilter] = useState("")
+
+  // Function to refresh games list - memoized with useCallback
+  const refreshGames = useCallback(async () => {
     if (!auth.currentUser) {
       navigate("/");
       return;
@@ -106,7 +346,7 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
     } finally {
       setIsRefreshing(false);
     }
-  };
+  }, [navigate, refreshNotifications]);
 
   useEffect(() => {
     const fetchGames = async () => {
@@ -161,8 +401,8 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
     };
   }, [navigate]);
 
-  // Helper to format date
-  const formatDate = (timestamp: unknown): string => {
+  // Helper to format date - memoized
+  const formatDate = useCallback((timestamp: unknown): string => {
     if (!timestamp) return "Unknown date";
 
     // Handle Firestore Timestamp-like objects
@@ -192,17 +432,105 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
     }
 
     return "Unknown date format";
-  };
+  }, []);
 
-  // Helper to get opponent name
-  const getOpponentName = (game: Game) => {
+  // Helper to get opponent name - memoized
+  const getOpponentName = useCallback((game: Game) => {
     const isCreator = auth.currentUser?.uid === game.createdBy;
     const opponentId = isCreator ? game.opponent : game.createdBy;
     return userProfiles[opponentId]?.displayName || "Unknown player";
-  };
+  }, [userProfiles]);
 
-  // Handle accepting a game invitation
-  const handleAcceptInvitation = async (gameId: string) => {
+  // Helper to get opponent data (name, avatar, etc.) - memoized
+  const getOpponentData = useCallback((game: Game) => {
+    const isCreator = auth.currentUser?.uid === game.createdBy;
+    const opponentId = isCreator ? game.opponent : game.createdBy;
+    const profile = userProfiles[opponentId];
+    return {
+      name: profile?.displayName || "Unknown player",
+      photoURL: profile?.photoURL || null,
+      initials: profile?.displayName ? profile.displayName.substring(0, 2).toUpperCase() : "UP"
+    };
+  }, [userProfiles]);
+
+  // Transform games data for table display - memoized
+  const tableData = useMemo(() => {
+    return games.map((game): GameTableRow => {
+      const isCreator = auth.currentUser?.uid === game.createdBy;
+      const opponentData = getOpponentData(game);
+      
+      // Determine status display and color
+      let statusDisplay = "";
+      let statusColor = "";
+      let result: "Won" | "Lost" | null = null;
+      
+      switch (game.status) {
+        case "invited":
+          if (game.opponent === auth.currentUser?.uid) {
+            statusDisplay = "New Invitation";
+            statusColor = "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-100 animate-pulse";
+          } else {
+            statusDisplay = "Awaiting Response";
+            statusColor = "bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-300";
+          }
+          break;
+        case "accepted":
+          statusDisplay = "Ready to Play";
+          statusColor = "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100";
+          break;
+        case "in_progress":
+          statusDisplay = "In Progress";
+          statusColor = "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-100";
+          break;
+        case "waiting_confirmation":
+          statusDisplay = "Waiting Confirmation";
+          statusColor = "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-100";
+          break;
+        case "completed":
+          statusDisplay = "Completed";
+          statusColor = "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-100";
+          result = game.winner === auth.currentUser?.uid ? "Won" : "Lost";
+          break;
+        case "rejected":
+          statusDisplay = "Rejected";
+          statusColor = "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100";
+          break;
+        default:
+          statusDisplay = game.status;
+          statusColor = "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-100";
+      }
+
+      // Create game info string - simplified for mobile
+      const gameInfo = game.settings.gameMode === "single" ? "Individual" : "Teams";
+
+      // Calculate score if game is completed
+      let score: { player: number; opponent: number } | undefined;
+      if (game.status === "completed" && game.scores) {
+        const playerScore = isCreator ? game.scores.creator : game.scores.opponent;
+        const opponentScore = isCreator ? game.scores.opponent : game.scores.creator;
+        score = {
+          player: playerScore || 0,
+          opponent: opponentScore || 0,
+        };
+      }
+
+      return {
+        ...game,
+        opponentName: opponentData.name,
+        opponentPhotoURL: opponentData.photoURL,
+        opponentInitials: opponentData.initials,
+        formattedDate: formatDate(game.createdAt),
+        statusDisplay,
+        statusColor,
+        gameInfo,
+        result,
+        score,
+      };
+    });
+  }, [games, getOpponentData, formatDate]);
+
+  // Handle accepting a game invitation - memoized
+  const handleAcceptInvitation = useCallback(async (gameId: string) => {
     try {
       // Check if user is already in an active game before proceeding
       if (isInActiveGame) {
@@ -225,10 +553,10 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
     } finally {
       setActionInProgress(null);
     }
-  };
+  }, [isInActiveGame, refreshGames]);
 
-  // Handle rejecting a game invitation
-  const handleRejectInvitation = async (gameId: string) => {
+  // Handle rejecting a game invitation - memoized
+  const handleRejectInvitation = useCallback(async (gameId: string) => {
     try {
       setActionInProgress(gameId);
       const result = await rejectGameInvitation(gameId);
@@ -242,10 +570,10 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
     } finally {
       setActionInProgress(null);
     }
-  };
+  }, [refreshGames]);
 
-  // Handle starting a game
-  const handleStartGame = async (gameId: string) => {
+  // Handle starting a game - memoized
+  const handleStartGame = useCallback(async (gameId: string) => {
     try {
       setActionInProgress(gameId);
       const result = await startGame(gameId);
@@ -262,87 +590,80 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
     } finally {
       setActionInProgress(null);
     }
-  };
+  }, [refreshGames, navigate]);
 
-  // Filter games by status
-  const invitationsReceived = games.filter(
-    (game) =>
-      game.status === "invited" && game.opponent === auth.currentUser?.uid,
+  // Handle navigation callbacks
+  const handleNavigateHome = useCallback(() => navigate("/"), [navigate]);
+  
+  const handleCreateGameClick = useCallback((e: React.MouseEvent) => {
+    if (isInActiveGame) {
+      e.preventDefault();
+      alert("You cannot create a new game while you have an active game");
+    }
+  }, [isInActiveGame]);
+
+  // Create columns with handlers
+  const columns = useMemo(() => 
+    createColumns(
+      handleAcceptInvitation,
+      handleRejectInvitation,
+      handleStartGame,
+      actionInProgress,
+      isInActiveGame,
+      navigate
+    ), 
+    [handleAcceptInvitation, handleRejectInvitation, handleStartGame, actionInProgress, isInActiveGame, navigate]
   );
 
-  const pendingInvitations = games.filter(
-    (game) =>
-      game.status === "invited" && game.createdBy === auth.currentUser?.uid,
-  );
+  // Configure table
+  const table = useReactTable({
+    data: tableData,
+    columns,
+    onSortingChange: setSorting,
+    onColumnFiltersChange: setColumnFilters,
+    onGlobalFilterChange: setGlobalFilter,
+    getCoreRowModel: getCoreRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    globalFilterFn: "includesString",
+    state: {
+      sorting,
+      columnFilters,
+      globalFilter,
+    },
+  });
 
-  // Active games include accepted and in_progress games
-  const activeGames = games.filter(
-    (game) => game.status === "accepted" || game.status === "in_progress",
-  );
-
-  // Games waiting for confirmation (separate from active games)
-  const waitingConfirmation = games.filter(
-    (game) =>
-      game.status === "waiting_confirmation" &&
-      game.confirmedBy === auth.currentUser?.uid,
-  );
-
-  const otherWaitingGames = games.filter(
-    (game) =>
-      game.status === "waiting_confirmation" &&
-      game.confirmedBy !== auth.currentUser?.uid,
-  );
-
-  // All games requiring action are those that are active or waiting confirmation
-  const actionRequiredGames = [
-    ...activeGames,
-    ...waitingConfirmation,
-    ...otherWaitingGames,
-  ];
-
-  const completedGames = games.filter((game) => game.status === "completed");
-
-  const rejectedGames = games.filter((game) => game.status === "rejected");
-
-  // Check for notifications and actionable items
-  const hasNewInvitations = invitationsReceived.length > 0;
-  const hasActiveGames = actionRequiredGames.length > 0;
+  // Memoized notification indicators for header
+  const notificationState = useMemo(() => {
+    const newInvitations = tableData.filter(
+      (game) => game.status === "invited" && game.opponent === auth.currentUser?.uid
+    );
+    const activeGames = tableData.filter(
+      (game) => game.status === "accepted" || game.status === "in_progress" || game.status === "waiting_confirmation"
+    );
+    
+    return {
+      hasNewInvitations: newInvitations.length > 0,
+      hasActiveGames: activeGames.length > 0,
+    };
+  }, [tableData]);
 
   if (loading) {
-    return (
-      <div className="p-6 max-w-4xl mx-auto text-zinc-900 dark:text-white">
-        <h1 className="text-2xl font-bold mb-6">My Games</h1>
-        <div className="bg-white dark:bg-zinc-800 rounded-lg shadow p-6 flex justify-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
-        </div>
-      </div>
-    );
+    return <LoadingState />;
   }
 
   if (!auth.currentUser) {
-    return (
-      <div className="p-6 max-w-4xl mx-auto text-zinc-900 dark:text-white">
-        <h1 className="text-2xl font-bold mb-6">My Games</h1>
-        <div className="bg-white dark:bg-zinc-800 rounded-lg shadow p-6 text-center">
-          <p className="mb-4">Please sign in to view your games.</p>
-          <button
-            onClick={() => navigate("/")}
-            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-          >
-            Go to Home
-          </button>
-        </div>
-      </div>
-    );
+    return <UnauthenticatedState onNavigateHome={handleNavigateHome} />;
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto text-zinc-900 dark:text-white">
+    <div className="p-2 sm:p-4 lg:p-6 w-full lg:max-w-6xl lg:mx-auto">
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-6 space-y-4 sm:space-y-0">
         <div className="flex flex-col sm:flex-row sm:items-center space-y-2 sm:space-y-0">
-          <h1 className="text-2xl font-bold flex items-center">
+          <h1 className="text-xl sm:text-2xl font-bold flex items-center">
             My Games
-            {hasNewInvitations && (
+            {notificationState.hasNewInvitations && (
               <span className="ml-3 inline-flex items-center">
                 <BellAlertIcon className="h-5 w-5 text-amber-500 animate-bounce" />
                 <span className="ml-1 text-sm font-medium text-amber-600">
@@ -380,33 +701,30 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
         </div>
         <Link
           to="/create-game"
-          className={`px-4 py-2 ${
+          className={`inline-block ${
             isInActiveGame
-              ? "bg-gray-400 cursor-not-allowed"
-              : "bg-blue-600 hover:bg-blue-700"
-          } text-white rounded-md`}
-          onClick={(e) => {
-            if (isInActiveGame) {
-              e.preventDefault();
-              alert(
-                "You cannot create a new game while you have an active game",
-              );
-            }
-          }}
+              ? "pointer-events-none opacity-50"
+              : ""
+          }`}
+          onClick={handleCreateGameClick}
         >
-          Create New Game
+          <Button disabled={isInActiveGame} className="bg-blue-600 text-white hover:bg-blue-700">
+            Create New Game
+          </Button>
         </Link>
       </div>
 
       {error && (
         <div className="mb-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded-md flex justify-between items-center">
           <div>{error}</div>
-          <button
-            className="ml-4 text-red-700 font-medium underline"
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => setError(null)}
+            className="ml-4 text-red-700 hover:text-red-800"
           >
             Dismiss
-          </button>
+          </Button>
         </div>
       )}
 
@@ -428,404 +746,127 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
       )}
 
       {games.length === 0 ? (
-        <div className="bg-white dark:bg-zinc-800 rounded-lg shadow p-6 text-center">
-          <p className="mb-4">You don't have any games yet.</p>
-          <Link
-            to="/create-game"
-            className={`px-4 py-2 ${
-              isInActiveGame
-                ? "bg-gray-400 cursor-not-allowed"
-                : "bg-blue-600 hover:bg-blue-700"
-            } text-white rounded-md`}
-            onClick={(e) => {
-              if (isInActiveGame) {
-                e.preventDefault();
-                alert(
-                  "You cannot create a new game while you have an active game",
-                );
-              }
-            }}
-          >
-            Create Your First Game
-          </Link>
-        </div>
+        <NoGamesState isInActiveGame={isInActiveGame} onCreateGame={handleCreateGameClick} />
       ) : (
-        <div className="space-y-6">
-          {/* Game invitations received */}
-          {invitationsReceived.length > 0 && (
-            <div>
-              <h2 className="text-xl font-semibold mb-3 flex items-center">
-                <span className="mr-2 inline-flex items-center justify-center w-5 h-5 text-xs font-bold text-white bg-red-500 rounded-full">
-                  {invitationsReceived.length}
-                </span>
-                Game Invitations Received
-                <span className="ml-2 animate-pulse inline-block w-2 h-2 bg-red-500 rounded-full"></span>
-              </h2>
-              <div className="bg-white dark:bg-zinc-800 rounded-lg shadow overflow-hidden border-2 border-amber-400 dark:border-amber-500">
-                <ul className="divide-y divide-gray-200 dark:divide-zinc-700">
-                  {invitationsReceived.map((game) => (
-                    <li
-                      key={game.id}
-                      className="hover:bg-amber-50 dark:hover:bg-amber-900/20"
-                    >
-                      <div className="p-4">
-                        <div className="flex justify-between items-center mb-4">
-                          <div>
-                            <p className="font-bold text-lg">
-                              Invitation from {getOpponentName(game)}
-                            </p>
-                            <p className="text-sm text-gray-500 dark:text-zinc-400">
-                              {formatDate(game.createdAt)} •{" "}
-                              {game.settings.gameMode} •{" "}
-                              {game.settings.pointsToWin} points
-                            </p>
-                            {game.settings.useBoricuaRules && (
-                              <span className="inline-block mt-1 text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded dark:bg-blue-900/20 dark:text-blue-300">
-                                Boricua Rules
-                              </span>
-                            )}
-                          </div>
-                          <span className="inline-block px-3 py-1 text-xs font-medium rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-100 animate-pulse">
-                            New Invitation
-                          </span>
-                        </div>
-                        <div className="flex justify-end space-x-3">
-                          <button
-                            onClick={() =>
-                              handleRejectInvitation(game.id || "")
-                            }
-                            disabled={
-                              actionInProgress === game.id || isInActiveGame
-                            }
-                            className={`px-4 py-2 text-sm font-medium rounded-md ${
-                              actionInProgress === game.id
-                                ? "bg-gray-300 text-gray-500 cursor-not-allowed"
-                                : "bg-red-100 text-red-800 hover:bg-red-200 dark:bg-red-900/50 dark:text-red-100 dark:hover:bg-red-900/80"
-                            }`}
-                          >
-                            {actionInProgress === game.id
-                              ? "Processing..."
-                              : "Decline"}
-                          </button>
-                          <button
-                            onClick={() =>
-                              handleAcceptInvitation(game.id || "")
-                            }
-                            disabled={actionInProgress === game.id}
-                            className={`px-4 py-2 text-sm font-medium rounded-md ${
-                              actionInProgress === game.id
-                                ? "bg-gray-300 text-gray-500 cursor-not-allowed"
-                                : isInActiveGame
-                                  ? "bg-yellow-600 text-white hover:bg-yellow-700"
-                                  : "bg-green-600 text-white hover:bg-green-700"
-                            }`}
-                          >
-                            {actionInProgress === game.id
-                              ? "Processing..."
-                              : isInActiveGame
-                                ? "Already in a game"
-                                : "Accept Invitation"}
-                          </button>
-                        </div>
-                        {isInActiveGame && !actionInProgress && (
-                          <div className="mt-2 p-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-md dark:bg-amber-900/20 dark:border-amber-800 dark:text-amber-200">
-                            <p className="text-sm">
-                              You must complete your active game before
-                              accepting a new invitation.
-                            </p>
-                            <Link
-                              to={`/games`}
-                              className="text-sm font-medium text-blue-600 hover:text-blue-800 mt-1 inline-block"
-                              onClick={refreshGames}
+        <Card>
+          <CardHeader>
+            <CardTitle>All Games</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="w-full">
+              {/* Search Input */}
+              <div className="flex items-center md:flex-row flex-col-reverse py-4">
+                <Input
+                  placeholder="Search games by opponent name, status..."
+                  value={globalFilter ?? ""}
+                  onChange={(event) => setGlobalFilter(String(event.target.value))}
+                  className="max-w-sm"
+                />
+                <div className="ml-auto text-sm text-muted-foreground">
+                  {table.getFilteredRowModel().rows.length} of{" "}
+                  {table.getCoreRowModel().rows.length} games
+                </div>
+              </div>
+              
+              {/* Table */}
+              <div className="overflow-hidden rounded-md border">
+                <Table>
+                  <TableHeader>
+                    {table.getHeaderGroups().map((headerGroup) => (
+                      <TableRow key={headerGroup.id}>
+                        {headerGroup.headers.map((header) => {
+                          // Check if this is the Type column and add responsive class
+                          const isTypeColumn = header.column.id === "gameInfo";
+                          return (
+                            <TableHead 
+                              key={header.id}
+                              className={isTypeColumn ? "hidden sm:table-cell" : ""}
                             >
-                              View my active game →
-                            </Link>
-                          </div>
-                        )}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
+                              {header.isPlaceholder
+                                ? null
+                                : flexRender(
+                                    header.column.columnDef.header,
+                                    header.getContext()
+                                  )}
+                            </TableHead>
+                          )
+                        })}
+                      </TableRow>
+                    ))}
+                  </TableHeader>
+                  <TableBody>
+                    {table.getRowModel().rows?.length ? (
+                      table.getRowModel().rows.map((row) => (
+                        <TableRow
+                          key={row.id}
+                          className="cursor-pointer hover:bg-gray-50 dark:hover:bg-zinc-700/50"
+                          onClick={() => navigate(`/game/${row.original.id}`)}
+                        >
+                          {row.getVisibleCells().map((cell) => {
+                            // Check if this is the Type column and add responsive class
+                            const isTypeColumn = cell.column.id === "gameInfo";
+                            return (
+                              <TableCell 
+                                key={cell.id}
+                                className={isTypeColumn ? "hidden sm:table-cell" : ""}
+                              >
+                                {flexRender(
+                                  cell.column.columnDef.cell,
+                                  cell.getContext()
+                                )}
+                              </TableCell>
+                            );
+                          })}
+                        </TableRow>
+                      ))
+                    ) : (
+                      <TableRow>
+                        <TableCell
+                          colSpan={columns.length}
+                          className="h-24 text-center"
+                        >
+                          No games found.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+              
+              {/* Pagination */}
+              <div className="flex items-center justify-end space-x-2 py-4">
+                <div className="text-muted-foreground flex-1 text-sm">
+                  Page {table.getState().pagination.pageIndex + 1} of{" "}
+                  {table.getPageCount()}
+                </div>
+                <div className="space-x-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => table.previousPage()}
+                    disabled={!table.getCanPreviousPage()}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => table.nextPage()}
+                    disabled={!table.getCanNextPage()}
+                  >
+                    Next
+                  </Button>
+                </div>
               </div>
             </div>
-          )}
-
-          {/* Pending invitations (waiting for opponent) */}
-          {pendingInvitations.length > 0 && (
-            <div>
-              <h2 className="text-xl font-semibold mb-3">
-                Pending Invitations
-              </h2>
-              <div className="bg-white dark:bg-zinc-800 rounded-lg shadow overflow-hidden">
-                <ul className="divide-y divide-gray-200 dark:divide-zinc-700">
-                  {pendingInvitations.map((game) => (
-                    <li
-                      key={game.id}
-                      className="hover:bg-gray-50 dark:hover:bg-zinc-700"
-                    >
-                      <Link to={`/game/${game.id}`} className="block p-4">
-                        <div className="flex justify-between items-center">
-                          <div>
-                            <div className="flex items-center">
-                              <p className="font-medium">
-                                Invitation to {getOpponentName(game)}
-                              </p>
-                              <span className="ml-2 flex-shrink-0 h-2 w-2 bg-blue-500 rounded-full animate-pulse"></span>
-                            </div>
-                            <p className="text-sm text-gray-500 dark:text-zinc-400">
-                              {formatDate(game.createdAt)} •{" "}
-                              {game.settings.gameMode} •{" "}
-                              {game.settings.pointsToWin} points
-                            </p>
-                          </div>
-                          <span className="inline-block px-3 py-1 text-xs font-medium rounded-full bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
-                            Awaiting Response
-                          </span>
-                        </div>
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          )}
-
-          {/* Active games (accepted, in progress, or waiting confirmation) */}
-          {actionRequiredGames.length > 0 && (
-            <div>
-              <h2 className="text-xl font-semibold mb-3 flex items-center">
-                <span className="mr-2 inline-flex items-center justify-center w-5 h-5 text-xs font-bold text-white bg-green-500 rounded-full">
-                  {actionRequiredGames.length}
-                </span>
-                Active Games
-              </h2>
-              <div className="bg-white dark:bg-zinc-800 rounded-lg shadow overflow-hidden border-2 border-green-400 dark:border-green-500">
-                <ul className="divide-y divide-gray-200 dark:divide-zinc-700">
-                  {actionRequiredGames.map((game) => (
-                    <li
-                      key={game.id}
-                      className="hover:bg-gray-50 dark:hover:bg-zinc-700"
-                    >
-                      <div className="p-4">
-                        <div className="flex justify-between items-center mb-2">
-                          <div>
-                            <p className="font-medium">
-                              Game with {getOpponentName(game)}
-                            </p>
-                            <p className="text-sm text-gray-500 dark:text-zinc-400">
-                              {formatDate(game.createdAt)} •{" "}
-                              {game.settings.gameMode} •{" "}
-                              {game.settings.pointsToWin} points
-                            </p>
-                          </div>
-                          <span className="inline-block px-3 py-1 text-xs font-medium rounded-full bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-100">
-                            {game.status === "accepted"
-                              ? "Ready to Play"
-                              : game.status === "in_progress"
-                                ? "In Progress"
-                                : "Waiting Confirmation"}
-                          </span>
-                        </div>
-
-                        {game.status === "accepted" && (
-                          <div className="flex justify-end">
-                            <button
-                              onClick={() => handleStartGame(game.id || "")}
-                              disabled={actionInProgress === game.id}
-                              className={`px-3 py-1.5 text-sm font-medium rounded ${
-                                actionInProgress === game.id
-                                  ? "bg-gray-300 text-gray-500 cursor-not-allowed"
-                                  : "bg-blue-600 text-white hover:bg-blue-700"
-                              }`}
-                            >
-                              {actionInProgress === game.id
-                                ? "Starting..."
-                                : "Start Game"}
-                            </button>
-                          </div>
-                        )}
-
-                        {(game.status === "in_progress" ||
-                          game.status === "waiting_confirmation") && (
-                          <div className="flex justify-end">
-                            <Link
-                              to={`/game/${game.id}`}
-                              className="px-3 py-1.5 text-sm font-medium rounded bg-blue-600 text-white hover:bg-blue-700"
-                            >
-                              {game.status === "waiting_confirmation"
-                                ? "View Game"
-                                : "Continue Game"}
-                            </Link>
-                          </div>
-                        )}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          )}
-
-          {/* Games requiring confirmation - now included in active games section */}
-          {false && (
-            <div>
-              <h2 className="text-xl font-semibold mb-3">
-                Games Waiting Your Confirmation
-              </h2>
-              <div className="bg-white dark:bg-zinc-800 rounded-lg shadow overflow-hidden">
-                <ul className="divide-y divide-gray-200 dark:divide-zinc-700">
-                  {waitingConfirmation.map((game) => (
-                    <li
-                      key={game.id}
-                      className="hover:bg-gray-50 dark:hover:bg-zinc-700"
-                    >
-                      <Link to={`/game/${game.id}`} className="block p-4">
-                        <div className="flex justify-between items-center">
-                          <div>
-                            <p className="font-medium">
-                              Game with {getOpponentName(game)}
-                            </p>
-                            <p className="text-sm text-gray-500 dark:text-zinc-400">
-                              {formatDate(game.updatedAt)}
-                            </p>
-                          </div>
-                          <span className="inline-block px-3 py-1 text-xs font-medium rounded-full bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-100">
-                            Needs Confirmation
-                          </span>
-                        </div>
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          )}
-
-          {/* Waiting for other player confirmation - now included in active games section */}
-          {false && (
-            <div>
-              <h2 className="text-xl font-semibold mb-3">
-                Waiting for Opponent Confirmation
-              </h2>
-              <div className="bg-white dark:bg-zinc-800 rounded-lg shadow overflow-hidden">
-                <ul className="divide-y divide-gray-200 dark:divide-zinc-700">
-                  {otherWaitingGames.map((game) => (
-                    <li
-                      key={game.id}
-                      className="hover:bg-gray-50 dark:hover:bg-zinc-700"
-                    >
-                      <Link to={`/game/${game.id}`} className="block p-4">
-                        <div className="flex justify-between items-center">
-                          <div>
-                            <p className="font-medium">
-                              Game with {getOpponentName(game)}
-                            </p>
-                            <p className="text-sm text-gray-500 dark:text-zinc-400">
-                              {formatDate(game.updatedAt)}
-                            </p>
-                          </div>
-                          <span className="inline-block px-3 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300">
-                            Waiting Confirmation
-                          </span>
-                        </div>
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          )}
-
-          {/* Rejected games */}
-          {rejectedGames.length > 0 && (
-            <div>
-              <h2 className="text-xl font-semibold mb-3">Declined Games</h2>
-              <div className="bg-white dark:bg-zinc-800 rounded-lg shadow overflow-hidden">
-                <ul className="divide-y divide-gray-200 dark:divide-zinc-700">
-                  {rejectedGames.map((game) => (
-                    <li
-                      key={game.id}
-                      className="hover:bg-gray-50 dark:hover:bg-zinc-700"
-                    >
-                      <div className="block p-4">
-                        <div className="flex justify-between items-center">
-                          <div>
-                            <p className="font-medium">
-                              Game with {getOpponentName(game)}
-                            </p>
-                            <p className="text-sm text-gray-500 dark:text-zinc-400">
-                              {formatDate(game.updatedAt)}
-                            </p>
-                            {game.rejectionReason && (
-                              <p className="text-sm text-red-500 mt-1">
-                                Reason: {game.rejectionReason}
-                              </p>
-                            )}
-                          </div>
-                          <span className="inline-block px-3 py-1 text-xs font-medium rounded-full bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100">
-                            Declined
-                          </span>
-                        </div>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          )}
-
-          {/* Completed games */}
-          {completedGames.length > 0 && (
-            <div>
-              <h2 className="text-xl font-semibold mb-3">Completed Games</h2>
-              <div className="bg-white dark:bg-zinc-800 rounded-lg shadow overflow-hidden">
-                <ul className="divide-y divide-gray-200 dark:divide-zinc-700">
-                  {completedGames.map((game) => {
-                    const currentUserWon =
-                      game.winner === auth.currentUser?.uid;
-                    return (
-                      <li
-                        key={game.id}
-                        className="hover:bg-gray-50 dark:hover:bg-zinc-700"
-                      >
-                        <Link to={`/game/${game.id}`} className="block p-4">
-                          <div className="flex justify-between items-center">
-                            <div>
-                              <p className="font-medium">
-                                Game with {getOpponentName(game)}
-                              </p>
-                              <p className="text-sm text-gray-500 dark:text-zinc-400">
-                                {formatDate(game.updatedAt)}
-                              </p>
-                              {game.scores && (
-                                <p className="text-sm mt-1">
-                                  Score: {game.scores.creator} -{" "}
-                                  {game.scores.opponent}
-                                </p>
-                              )}
-                            </div>
-                            <span
-                              className={`inline-block px-3 py-1 text-xs font-medium rounded-full ${
-                                currentUserWon
-                                  ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100"
-                                  : "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100"
-                              }`}
-                            >
-                              {currentUserWon ? "Won" : "Lost"}
-                            </span>
-                          </div>
-                        </Link>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            </div>
-          )}
-        </div>
+          </CardContent>
+        </Card>
       )}
     </div>
   );
 };
 
-export default GamesList;
+// Memoize the entire component for better performance
+const MemoizedGamesList = memo(GamesList);
+
+export default MemoizedGamesList;

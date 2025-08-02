@@ -1,0 +1,83 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isGameParticipant(gameData) {
+      return isAuthenticated() && 
+             (request.auth.uid == gameData.createdBy || 
+              request.auth.uid == gameData.opponent);
+    }
+    
+    function isValidGameStatus(status) {
+      return status in ['invited', 'accepted', 'rejected', 'in_progress', 'waiting_confirmation', 'completed'];
+    }
+    
+    function isValidUserUpdate(currentData, newData) {
+      // Username can only be set once and cannot be changed
+      return (!('username' in currentData) && 'username' in newData) ||
+             (!('username' in newData)) ||
+             (currentData.username == newData.username);
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId) && 
+                       isValidUserUpdate(resource.data, request.resource.data);
+      allow delete: if false; // Users cannot be deleted
+    }
+
+    // Games collection
+    match /games/{gameId} {
+      allow read: if isAuthenticated() && isGameParticipant(resource.data);
+      allow create: if isAuthenticated() && 
+                       request.auth.uid == request.resource.data.createdBy &&
+                       isValidGameStatus(request.resource.data.status);
+      allow update: if isAuthenticated() && 
+                       isGameParticipant(resource.data) &&
+                       isValidGameStatus(request.resource.data.status);
+      allow delete: if false; // Games cannot be deleted
+    }
+
+    // Leagues collection
+    match /leagues/{leagueId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated(); // Add judge validation in app logic
+      allow update: if isAuthenticated(); // Add ownership validation in app logic
+      allow delete: if false;
+    }
+
+    // League memberships collection
+    match /leagueMemberships/{membershipId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && 
+                       request.auth.uid == request.resource.data.userId;
+      allow update: if isAuthenticated() && 
+                       request.auth.uid == resource.data.userId;
+      allow delete: if isAuthenticated() && 
+                       request.auth.uid == resource.data.userId;
+    }
+
+    // Seasons collection
+    match /seasons/{seasonId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated(); // Add judge validation in app logic
+      allow update: if isAuthenticated(); // Add ownership validation in app logic
+      allow delete: if false;
+    }
+
+    // Deny all other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

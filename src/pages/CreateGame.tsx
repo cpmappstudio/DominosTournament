@@ -1,4 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { getGamePreferences, GamePreferences } from "../utils/gamePreferences";
+import { useGameDefaults, useGameOptions } from "../hooks/useGameConfig";
 import { useNavigate, Link } from "react-router-dom";
 import { auth, createGame, searchUsers, isPlayerInActiveGame, GameMode, UserProfile, getAllActiveLeagues } from "../firebase";
 import { ArrowLeftIcon, InformationCircleIcon, ExclamationTriangleIcon, XMarkIcon, UserPlusIcon } from "@heroicons/react/24/solid";
@@ -8,15 +10,32 @@ import { getFirestore, collection, query, where, getDocs } from "firebase/firest
 const CreateGame: React.FC = () => {
   const navigate = useNavigate();
   
-  // Game configuration state
+  // Dynamic game configuration hooks
+  const { defaults: gameDefaults, loading: defaultsLoading } = useGameDefaults();
+  const { options: gameOptions, loading: optionsLoading } = useGameOptions();
+  
+  // Game configuration state - initialize with dynamic defaults
   const [gameConfig, setGameConfig] = useState({
-    gameMode: "teams" as GameMode,
-    pointsToWin: 100,
-    numberOfPlayers: 2,
+    gameMode: "double", // Will be updated when defaults load
+    pointsToWin: 150,    // Will be updated when defaults load
+    numberOfPlayers: 4,  // Will be updated based on game mode
     startingPlayer: "creator", // creator, opponent, or random
-    useBoricuaRules: true,
-    selectedLeague: "" // New field for selected league
+    ruleset: "standard", // Will be updated when defaults load
+    selectedLeague: ""   // New field for selected league
   });
+  
+  // Initialize game config with user defaults when they load
+  useEffect(() => {
+    if (gameDefaults && !defaultsLoading) {
+      setGameConfig(prev => ({
+        ...prev,
+        gameMode: gameDefaults.gameMode,
+        pointsToWin: gameDefaults.points,
+        numberOfPlayers: gameDefaults.gameMode === "double" ? 4 : 2,
+        ruleset: gameDefaults.ruleset
+      }));
+    }
+  }, [gameDefaults, defaultsLoading]);
   
   // League state
   const [availableLeagues, setAvailableLeagues] = useState<{id: string, name: string, settings: any}[]>([]);
@@ -41,27 +60,64 @@ const CreateGame: React.FC = () => {
   
   // Calculate max opponents based on game mode and number of players
   const getMaxOpponents = () => {
-    if (gameConfig.gameMode === "teams") {
+    if (gameConfig.gameMode === "double") {
       return gameConfig.numberOfPlayers === 4 ? 3 : 1;
     } else {
       return gameConfig.numberOfPlayers - 1;
     }
   };
   
+  // Helper function to convert ruleset to boolean for backward compatibility
+  const getUseBoricuaRules = useCallback(() => {
+    return gameConfig.ruleset === "boricua";
+  }, [gameConfig.ruleset]);
+  
+  // Memoized available game modes from dynamic config
+  const availableGameModes = useMemo(() => {
+    if (!gameOptions) return [];
+    return gameOptions.gameModes.map(mode => ({
+      value: mode.value,
+      label: mode.label,
+      description: mode.description
+    }));
+  }, [gameOptions]);
+  
+  // Memoized available points options from dynamic config
+  const availablePointsOptions = useMemo(() => {
+    if (!gameOptions) return [];
+    return gameOptions.pointsOptions.map(option => ({
+      value: option.value,
+      label: option.label,
+      description: option.description
+    }));
+  }, [gameOptions]);
+  
+  // Memoized available rulesets from dynamic config
+  const availableRulesets = useMemo(() => {
+    if (!gameOptions) return [];
+    return gameOptions.rulesets.map(ruleset => ({
+      value: ruleset.value,
+      label: ruleset.label,
+      description: ruleset.description
+    }));
+  }, [gameOptions]);
+  
   // Load all active leagues on component mount
   useEffect(() => {
-    const loadActiveLeagues = async () => {
+    const loadUserLeagues = async () => {
       try {
-        const leagues = await getAllActiveLeagues();
+        // Only show leagues the user belongs to
+        const { getUserLeagues } = await import("../firebase");
+        const leagues = await getUserLeagues();
         setAvailableLeagues(leagues);
       } catch (error) {
-        console.error('Error loading active leagues:', error);
+        console.error('Error loading user leagues:', error);
       } finally {
         setLoadingLeagues(false);
       }
     };
 
-    loadActiveLeagues();
+    loadUserLeagues();
   }, []);
 
   // Apply league settings when a league is selected
@@ -71,7 +127,7 @@ const CreateGame: React.FC = () => {
       setGameConfig(prev => ({
         ...prev,
         pointsToWin: selectedLeague.settings.pointsToWin || prev.pointsToWin,
-        useBoricuaRules: selectedLeague.settings.useBoricuaRules ?? prev.useBoricuaRules
+        ruleset: selectedLeague.settings.useBoricuaRules ? "boricua" : "standard"
       }));
       setLeagueSettingsApplied(true);
     } else {
@@ -178,16 +234,22 @@ const CreateGame: React.FC = () => {
   
   // Handle radio/checkbox changes
   const handleOptionChange = (name: string, value: any) => {
-    setGameConfig(prev => ({ ...prev, [name]: value }));
-    
+    // If changing game mode, ensure numberOfPlayers is valid
+    if (name === "gameMode") {
+      setGameConfig(prev => ({
+        ...prev,
+        gameMode: value,
+        numberOfPlayers: value === "double" ? (prev.numberOfPlayers === 4 ? 4 : 2) : 2
+      }));
+    } else {
+      setGameConfig(prev => ({ ...prev, [name]: value }));
+    }
     // If changing game mode or number of players, check if we need to adjust selected opponents
     if ((name === "gameMode" || name === "numberOfPlayers") && selectedOpponents.length > 0) {
-      const newMaxOpponents = name === "gameMode" && value === "teams" ? 
+      const newMaxOpponents = name === "gameMode" && value === "double" ? 
         (gameConfig.numberOfPlayers === 4 ? 3 : 1) : 
-        (name === "numberOfPlayers" && value === 4 && gameConfig.gameMode === "teams" ? 3 : 1);
-      
+        (name === "numberOfPlayers" && value === 4 && gameConfig.gameMode === "double" ? 3 : 1);
       if (selectedOpponents.length > newMaxOpponents) {
-        // Keep only the first newMaxOpponents opponents
         setSelectedOpponents(prev => prev.slice(0, newMaxOpponents));
         setError(`Game mode changed. Maximum number of opponents is now ${newMaxOpponents}.`);
       }
@@ -242,6 +304,12 @@ const CreateGame: React.FC = () => {
       return;
     }
     
+    // Require league selection
+    if (!gameConfig.selectedLeague) {
+      setError("You must belong to a league to create a game. Please select a league.");
+      return;
+    }
+    
     // Check if we have the correct number of opponents
     const requiredOpponents = getMaxOpponents();
     
@@ -265,11 +333,11 @@ const CreateGame: React.FC = () => {
       // For now, we'll use the first opponent for backward compatibility
       // In a real implementation, you would update createGame to accept multiple opponents
       const game = await createGame(selectedOpponents[0].uid, {
-        gameMode: gameConfig.gameMode,
+        gameMode: gameConfig.gameMode as GameMode,
         pointsToWin: parseInt(gameConfig.pointsToWin.toString()),
         numberOfPlayers: gameConfig.numberOfPlayers,
         startingPlayer: gameConfig.startingPlayer,
-        useBoricuaRules: gameConfig.useBoricuaRules,
+        useBoricuaRules: getUseBoricuaRules(),
         leagueId: gameConfig.selectedLeague || undefined
       });
       
@@ -287,7 +355,7 @@ const CreateGame: React.FC = () => {
   };
   
   return (
-    <div className="p-6 max-w-2xl mx-auto text-zinc-900 dark:text-white">
+    <div className="p-6 max-w-6xl mx-auto text-zinc-900 dark:text-white">
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">Create New Game</h1>
         {activeStep === 2 && (
@@ -339,7 +407,7 @@ const CreateGame: React.FC = () => {
               {/* League Selection */}
               <div className="mb-6">
                 <label className="block text-sm font-medium mb-2">
-                  Liga (Opcional)
+                  League
                 </label>
                 {loadingLeagues ? (
                   <div className="w-full h-10 bg-gray-200 dark:bg-zinc-700 rounded-lg animate-pulse" />
@@ -348,7 +416,7 @@ const CreateGame: React.FC = () => {
                     value={gameConfig.selectedLeague}
                     onChange={(e) => setGameConfig(prev => ({ ...prev, selectedLeague: e.target.value }))}
                   >
-                    <option value="">Sin liga - Juego global</option>
+                    <option value="">Select a league...</option>
                     {availableLeagues.map(league => (
                       <option key={league.id} value={league.id}>
                         {league.name}
@@ -358,7 +426,7 @@ const CreateGame: React.FC = () => {
                 )}
                 {gameConfig.selectedLeague && leagueSettingsApplied && (
                   <p className="mt-2 text-sm text-blue-600 dark:text-blue-400">
-                    ✓ Configuración de la liga aplicada automáticamente
+                    ✓ League settings applied automatically
                   </p>
                 )}
               </div>
@@ -366,59 +434,43 @@ const CreateGame: React.FC = () => {
               {/* Game Type Selection */}
               <div className="mb-6">
                 <label className="block text-sm font-medium mb-2">Game Mode</label>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div 
-                    className={`p-4 border rounded-lg cursor-pointer ${
-                      gameConfig.gameMode === "individual" 
-                        ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20" 
-                        : "border-gray-300 dark:border-zinc-600"
-                    }`}
-                    onClick={() => handleOptionChange("gameMode", "individual")}
-                  >
-                    <div className="flex items-start">
-                      <input
-                        type="radio"
-                        name="gameMode"
-                        value="individual"
-                        checked={gameConfig.gameMode === "individual"}
-                        onChange={() => {}}
-                        className="h-4 w-4 mt-1 text-blue-600"
-                      />
-                      <div className="ml-3">
-                        <span className="block font-medium">Individual</span>
-                        <span className="block text-sm text-gray-500 dark:text-zinc-400">
-                          Each player competes on their own
-                        </span>
-                      </div>
-                    </div>
+                {optionsLoading ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="h-20 bg-gray-200 dark:bg-zinc-700 rounded-lg animate-pulse" />
+                    <div className="h-20 bg-gray-200 dark:bg-zinc-700 rounded-lg animate-pulse" />
                   </div>
-                  
-                  <div 
-                    className={`p-4 border rounded-lg cursor-pointer ${
-                      gameConfig.gameMode === "teams" 
-                        ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20" 
-                        : "border-gray-300 dark:border-zinc-600"
-                    }`}
-                    onClick={() => handleOptionChange("gameMode", "teams")}
-                  >
-                    <div className="flex items-start">
-                      <input
-                        type="radio"
-                        name="gameMode"
-                        value="teams"
-                        checked={gameConfig.gameMode === "teams"}
-                        onChange={() => {}}
-                        className="h-4 w-4 mt-1 text-blue-600"
-                      />
-                      <div className="ml-3">
-                        <span className="block font-medium">Teams</span>
-                        <span className="block text-sm text-gray-500 dark:text-zinc-400">
-                          Traditional Boricua format (2 vs 2)
-                        </span>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {availableGameModes.map((mode) => (
+                      <div 
+                        key={mode.value}
+                        className={`p-4 border rounded-lg cursor-pointer ${
+                          gameConfig.gameMode === mode.value
+                            ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20" 
+                            : "border-gray-300 dark:border-zinc-600"
+                        }`}
+                        onClick={() => handleOptionChange("gameMode", mode.value)}
+                      >
+                        <div className="flex items-start">
+                          <input
+                            type="radio"
+                            name="gameMode"
+                            value={mode.value}
+                            checked={gameConfig.gameMode === mode.value}
+                            onChange={() => {}}
+                            className="h-4 w-4 mt-1 text-blue-600"
+                          />
+                          <div className="ml-3">
+                            <span className="block font-medium">{mode.label}</span>
+                            <span className="block text-sm text-gray-500 dark:text-zinc-400">
+                              {mode.description}
+                            </span>
+                          </div>
+                        </div>
                       </div>
-                    </div>
+                    ))}
                   </div>
-                </div>
+                )}
               </div>
               
               {/* Number of Players */}
@@ -455,22 +507,22 @@ const CreateGame: React.FC = () => {
                       gameConfig.numberOfPlayers === 4
                         ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20" 
                         : "border-gray-300 dark:border-zinc-600"
-                    } ${gameConfig.gameMode === "individual" ? "opacity-50 cursor-not-allowed" : ""}`}
-                    onClick={() => gameConfig.gameMode === "teams" && handleOptionChange("numberOfPlayers", 4)}
+                    } ${gameConfig.gameMode === "single" ? "opacity-50 cursor-not-allowed" : ""}`}
+                    onClick={() => gameConfig.gameMode === "double" && handleOptionChange("numberOfPlayers", 4)}
                   >
                     <div className="flex items-start">
                       <input
                         type="radio"
                         name="numberOfPlayers"
                         checked={gameConfig.numberOfPlayers === 4}
-                        disabled={gameConfig.gameMode === "individual"}
+                        disabled={gameConfig.gameMode === "single"}
                         onChange={() => {}}
                         className="h-4 w-4 mt-1 text-blue-600"
                       />
                       <div className="ml-3">
                         <span className="block font-medium">4 Players</span>
                         <span className="block text-sm text-gray-500 dark:text-zinc-400">
-                          Team play (requires Teams mode)
+                          Double play (requires Double mode)
                         </span>
                       </div>
                     </div>
@@ -486,19 +538,25 @@ const CreateGame: React.FC = () => {
                     <span className="ml-2 text-xs text-blue-600 dark:text-blue-400">(Liga configuración)</span>
                   )}
                 </label>
-                <select
-                  name="pointsToWin"
-                  value={gameConfig.pointsToWin}
-                  onChange={handleChange}
-                  disabled={leagueSettingsApplied}
-                  className={`w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-700 dark:border-zinc-600 ${
-                    leagueSettingsApplied ? 'opacity-50 cursor-not-allowed' : ''
-                  }`}
-                >
-                  <option value={100}>100 points (short game)</option>
-                  <option value={150}>150 points (standard match)</option>
-                  <option value={200}>200 points (formal match)</option>
-                </select>
+                {optionsLoading ? (
+                  <div className="w-full h-10 bg-gray-200 dark:bg-zinc-700 rounded-lg animate-pulse" />
+                ) : (
+                  <select
+                    name="pointsToWin"
+                    value={gameConfig.pointsToWin}
+                    onChange={handleChange}
+                    disabled={leagueSettingsApplied}
+                    className={`w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-700 dark:border-zinc-600 ${
+                      leagueSettingsApplied ? 'opacity-50 cursor-not-allowed' : ''
+                    }`}
+                  >
+                    {availablePointsOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label} {option.description && `(${option.description})`}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
               
               {/* Starting Player */}
@@ -518,28 +576,42 @@ const CreateGame: React.FC = () => {
               
               {/* Rules Variant */}
               <div className="mb-6">
-                <label className={`flex items-center space-x-2 ${leagueSettingsApplied ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
-                  <input
-                    type="checkbox"
-                    checked={gameConfig.useBoricuaRules}
-                    onChange={(e) => handleOptionChange("useBoricuaRules", e.target.checked)}
-                    disabled={leagueSettingsApplied}
-                    className="h-4 w-4 text-blue-600"
-                  />
-                  <span className="text-sm font-medium">
-                    Use Boricua (Puerto Rican) Rules
-                    {leagueSettingsApplied && (
-                      <span className="ml-2 text-xs text-blue-600 dark:text-blue-400">(Liga configuración)</span>
-                    )}
-                  </span>
+                <label className="block text-sm font-medium mb-2">
+                  Game Rules
+                  {leagueSettingsApplied && (
+                    <span className="ml-2 text-xs text-blue-600 dark:text-blue-400">(Liga configuración)</span>
+                  )}
                 </label>
-                <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-md text-sm flex items-start">
-                  <InformationCircleIcon className="h-5 w-5 text-blue-600 mr-2 flex-shrink-0 mt-0.5" />
-                  <span className="text-gray-700 dark:text-zinc-300">
-                    Traditional Puerto Rican rules include scoring from the opponent's remaining tiles, 
-                    and play proceeds counter-clockwise.
-                  </span>
-                </div>
+                {optionsLoading ? (
+                  <div className="w-full h-10 bg-gray-200 dark:bg-zinc-700 rounded-lg animate-pulse" />
+                ) : (
+                  <select
+                    name="ruleset"
+                    value={gameConfig.ruleset}
+                    onChange={handleChange}
+                    disabled={leagueSettingsApplied}
+                    className={`w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-700 dark:border-zinc-600 ${
+                      leagueSettingsApplied ? 'opacity-50 cursor-not-allowed' : ''
+                    }`}
+                  >
+                    {availableRulesets.map((ruleset) => (
+                      <option key={ruleset.value} value={ruleset.value}>
+                        {ruleset.label} {ruleset.description && `- ${ruleset.description}`}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                
+                {/* Show current ruleset description */}
+                {gameConfig.ruleset === "boricua" && (
+                  <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-md text-sm flex items-start">
+                    <InformationCircleIcon className="h-5 w-5 text-blue-600 mr-2 flex-shrink-0 mt-0.5" />
+                    <span className="text-gray-700 dark:text-zinc-300">
+                      Traditional Puerto Rican rules include scoring from the opponent's remaining tiles, 
+                      and play proceeds counter-clockwise.
+                    </span>
+                  </div>
+                )}
               </div>
               
               {/* Continue Button */}
@@ -573,10 +645,11 @@ const CreateGame: React.FC = () => {
                     <div className="flex items-center text-sm text-blue-700 dark:text-blue-300">
                       <InformationCircleIcon className="h-4 w-4 mr-1" />
                       <span>
-                        Búsqueda limitada a miembros de: {
-                          availableLeagues.find(league => league.id === gameConfig.selectedLeague)?.name || "Liga seleccionada"
+                        Search limited to members of: {
+                          availableLeagues.find(league => league.id === gameConfig.selectedLeague)?.name || "Selected league"
                         }
                       </span>
+                      <span className="ml-2 text-xs text-blue-600 dark:text-blue-400">(League settings)</span>
                     </div>
                   </div>
                 )}
@@ -700,7 +773,7 @@ const CreateGame: React.FC = () => {
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <span className="block text-sm text-gray-500 dark:text-zinc-400">Game Mode</span>
-                      <span className="font-medium">{gameConfig.gameMode === "teams" ? "Teams" : "Individual"}</span>
+                      <span className="font-medium">{gameConfig.gameMode === "double" ? "Double" : "Single"}</span>
                     </div>
                     <div>
                       <span className="block text-sm text-gray-500 dark:text-zinc-400">Players</span>
@@ -723,7 +796,7 @@ const CreateGame: React.FC = () => {
                     <div className="col-span-2">
                       <span className="block text-sm text-gray-500 dark:text-zinc-400">Rules</span>
                       <span className="font-medium">
-                        {gameConfig.useBoricuaRules ? "Boricua (Puerto Rican)" : "Standard"}
+                        {availableRulesets.find(r => r.value === gameConfig.ruleset)?.label || gameConfig.ruleset}
                       </span>
                     </div>
                   </div>

@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { Link } from "react-router-dom";
 import { auth } from "../firebase";
 import {
@@ -8,8 +8,24 @@ import {
   ClipboardIcon,
 } from "@heroicons/react/24/solid";
 
+// Preload functions for remaining lazy pages only
+const preloadPages = {
+  profile: () => import("./Profile"),
+  gamesList: () => import("./GamesList"),
+};
+
 const Home: React.FC = () => {
   const isLoggedIn = !!auth.currentUser;
+
+  // Preload critical pages when component mounts
+  useEffect(() => {
+    if (isLoggedIn) {
+      // Preload authenticated user pages that are still lazy
+      preloadPages.profile();
+      preloadPages.gamesList();
+    }
+    // Note: CreateGame, Rankings, Settings, Rules are now direct imports (no need to preload)
+  }, [isLoggedIn]);
 
   // Main navigation buttons config
   const mainNavButtons = [
@@ -48,7 +64,7 @@ const Home: React.FC = () => {
   ];
 
   return (
-    <div className="flex flex-col min-h-screen items-center justify-center p-6 text-zinc-900 dark:text-white">
+    <div className="flex flex-col min-h-screen items-center justify-center p-6  text-zinc-900 dark:text-white">
       {/* Hero Section with Logo */}
       <div className="text-center mb-10">
         <div className="flex justify-center">
@@ -66,7 +82,7 @@ const Home: React.FC = () => {
       </div>
 
       {/* Main Navigation Buttons */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 max-w-4xl w-full">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 max-w-6xl w-full">
         {mainNavButtons.map((button) => (
           <Link
             key={button.label}

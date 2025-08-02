@@ -49,7 +49,7 @@ export const LoginButton: React.FC<LoginButtonProps> = ({
     <button
       onClick={handleLogin}
       disabled={isLoggingIn}
-      className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm/6 font-medium text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-white ${isLoggingIn ? 'opacity-70' : ''} ${className}`}
+      className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm/6 font-medium  hover:text-zinc-200 text-white hover:bg-zinc-800 ${isLoggingIn ? 'opacity-70' : ''} ${className}`}
     >
       <div className="flex h-5 w-5 items-center justify-center">
         {isLoggingIn ? (

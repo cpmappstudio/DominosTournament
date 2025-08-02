@@ -19,7 +19,7 @@ const CreateLeague: React.FC = () => {
     name: "",
     description: "",
     isPublic: true,
-    gameMode: "teams" as GameMode,
+    gameMode: "double" as GameMode,
     pointsToWin: 100,
     maxPlayers: 16,
     allowJoinRequests: true,
@@ -151,7 +151,7 @@ const CreateLeague: React.FC = () => {
     }
   };
   return (
-    <div className="p-6 max-w-4xl text-white mx-auto">
+    <div className="p-6 max-w-6xl dark:text-white mx-auto">
       <h1 className="text-3xl font-bold mb-6 flex items-center">
         <TrophyIcon className="h-8 w-8 mr-2 text-blue-500" />
         Create New League
@@ -239,11 +239,11 @@ const CreateLeague: React.FC = () => {
                 onChange={handleChange}
                 className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-700 dark:border-zinc-600"
               >
-                <option value="teams">Teams (Traditional Boricua)</option>
-                <option value="individual">Individual (Free-for-all)</option>
+                <option value="double">Double (Traditional Boricua)</option>
+                <option value="single">Single (Free-for-all)</option>
               </select>
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                Teams is the traditional Puerto Rican format (2 vs 2)
+                Double is the traditional Puerto Rican format (2 vs 2)
               </p>
             </div>
             <div>

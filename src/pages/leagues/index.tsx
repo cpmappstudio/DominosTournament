@@ -73,20 +73,9 @@ const LeaguesPage: React.FC = () => {
             (doc) => doc.data().leagueId,
           );
 
-          if (leagueIds.length > 0) {
-            const myLeaguesQuery = query(
-              leaguesRef,
-              where("id", "in", leagueIds),
-            );
-
-            const myLeaguesSnapshot = await getDocs(myLeaguesQuery);
-            const myLeaguesData: League[] = [];
-            myLeaguesSnapshot.forEach((doc) => {
-              myLeaguesData.push({ id: doc.id, ...doc.data() } as League);
-            });
-
-            setMyLeagues(myLeaguesData);
-          }
+          // Instead of querying by field 'id', filter by document ID
+          const myLeaguesData = leaguesData.filter((league) => leagueIds.includes(league.id));
+          setMyLeagues(myLeaguesData);
         }
       } catch (err) {
         console.error("Error fetching leagues:", err);
@@ -118,7 +107,7 @@ const LeaguesPage: React.FC = () => {
   }, [leagues, searchTerm]);
 
   return (
-    <div className="p-6 max-w-6xl mx-auto text-white">
+    <div className="p-6 max-w-6xl mx-auto dark:text-white">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-3xl font-bold">Domino Leagues</h1>
 
@@ -375,12 +364,12 @@ const LeaguesPage: React.FC = () => {
                         const membership = myLeagues.find(
                           (myLeague) => myLeague.id === league.id,
                         );
-                        
+
                         if (membership) {
                           // User is already a member
                           return (
-                            <span className="px-3 py-1 text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300 rounded-md">
-                              Member
+                            <span className="px-3 py-1 text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200 rounded-md">
+                              Joined
                             </span>
                           );
                         } else {

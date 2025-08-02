@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useMemo, memo } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { 
   auth, 
@@ -10,12 +10,91 @@ import {
   rejectGameInvitation,
   startGame
 } from "../firebase";
+import { useGameModeInfo, usePointsInfo, useRulesetInfo } from "../hooks/useGameConfig";
 import { getFirestore, doc, onSnapshot } from "firebase/firestore";
 import type { Game, UserProfile } from "../firebase";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "../components/ui/card";
 
 interface GameDetailProps {
   refreshNotifications?: () => Promise<void>;
 }
+
+// Component to display game mode with dynamic info
+const GameModeDisplay = memo<{ gameMode: string }>(({ gameMode }) => {
+  const gameModeInfo = useGameModeInfo(gameMode);
+  
+  return (
+    <div className="p-3 bg-gray-50 dark:bg-zinc-700 rounded-md">
+      <p className="text-sm text-gray-500 dark:text-zinc-400">Game Mode</p>
+      <p className="font-medium">
+        {gameModeInfo?.label || gameMode}
+        {!gameModeInfo?.isValid && (
+          <span className="ml-2 text-xs text-red-500">(Legacy)</span>
+        )}
+      </p>
+      {gameModeInfo?.description && (
+        <p className="text-xs text-gray-400 dark:text-zinc-500 mt-1">
+          {gameModeInfo.description}
+        </p>
+      )}
+    </div>
+  );
+});
+
+// Component to display points with dynamic info
+const PointsDisplay = memo<{ points: number }>(({ points }) => {
+  const pointsInfo = usePointsInfo(points);
+  
+  return (
+    <div className="p-3 bg-gray-50 dark:bg-zinc-700 rounded-md">
+      <p className="text-sm text-gray-500 dark:text-zinc-400">Points to Win</p>
+      <p className="font-medium">
+        {pointsInfo?.label || `${points} points`}
+        {!pointsInfo?.isValid && (
+          <span className="ml-2 text-xs text-red-500">(Custom)</span>
+        )}
+      </p>
+      {pointsInfo?.description && (
+        <p className="text-xs text-gray-400 dark:text-zinc-500 mt-1">
+          {pointsInfo.description}
+        </p>
+      )}
+    </div>
+  );
+});
+
+// Component to display ruleset with dynamic info
+const RulesetDisplay = memo<{ useBoricuaRules: boolean }>(({ useBoricuaRules }) => {
+  const rulesetValue = useBoricuaRules ? "boricua" : "standard";
+  const rulesetInfo = useRulesetInfo(rulesetValue);
+  
+  return (
+    <div className="p-3 bg-gray-50 dark:bg-zinc-700 rounded-md">
+      <p className="text-sm text-gray-500 dark:text-zinc-400">Game Rules</p>
+      <p className="font-medium">
+        {rulesetInfo?.label || (useBoricuaRules ? "Boricua" : "Standard")}
+        {!rulesetInfo?.isValid && (
+          <span className="ml-2 text-xs text-red-500">(Legacy)</span>
+        )}
+      </p>
+      {rulesetInfo?.description && (
+        <p className="text-xs text-gray-400 dark:text-zinc-500 mt-1">
+          {rulesetInfo.description}
+        </p>
+      )}
+    </div>
+  );
+});
+
+// Add display names for debugging
+GameModeDisplay.displayName = 'GameModeDisplay';
+PointsDisplay.displayName = 'PointsDisplay';
+RulesetDisplay.displayName = 'RulesetDisplay';
 
 const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
   const { id } = useParams<{ id: string }>();
@@ -33,25 +112,25 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
   const [rejectionReason, setRejectionReason] = useState<string>("");
 
   // Check if current user is part of this game
-  const isParticipant = () => {
+  const isParticipant = useCallback(() => {
     if (!game || !auth.currentUser) return false;
     return game.createdBy === auth.currentUser.uid || game.opponent === auth.currentUser.uid;
-  };
+  }, [game]);
 
   // Check if current user is the creator
-  const isCreator = () => {
+  const isCreator = useCallback(() => {
     if (!game || !auth.currentUser) return false;
     return game.createdBy === auth.currentUser.uid;
-  };
+  }, [game]);
 
   // Check if current user is the opponent
-  const isOpponent = () => {
+  const isOpponent = useCallback(() => {
     if (!game || !auth.currentUser) return false;
     return game.opponent === auth.currentUser.uid;
-  };
+  }, [game]);
   
   // Check if it's current user's turn to submit scores
-  const canSubmitScores = () => {
+  const canSubmitScores = useCallback(() => {
     if (!game || !auth.currentUser) return false;
     
     // Only the player who's currently active can submit scores
@@ -61,37 +140,37 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
     
     // If no activePlayer is set, only the creator can submit scores
     return isCreator();
-  };
+  }, [game, isCreator]);
 
   // Check if this is an invitation waiting for the current user to accept/reject
-  const isPendingInvitation = () => {
+  const isPendingInvitation = useCallback(() => {
     if (!game || !auth.currentUser) return false;
     return game.status === "invited" && game.opponent === auth.currentUser.uid;
-  };
+  }, [game]);
 
   // Check if this is an invitation the current user sent
-  const isSentInvitation = () => {
+  const isSentInvitation = useCallback(() => {
     if (!game || !auth.currentUser) return false;
     return game.status === "invited" && game.createdBy === auth.currentUser.uid;
-  };
+  }, [game]);
 
   // Check if game is accepted and ready to start
-  const isAccepted = () => {
+  const isAccepted = useCallback(() => {
     if (!game) return false;
     return game.status === "accepted";
-  };
+  }, [game]);
 
   // Check if it's the current user's turn
-  const isCurrentUserTurn = () => {
+  const isCurrentUserTurn = useCallback(() => {
     if (!game || !auth.currentUser || !game.activePlayer) return false;
     return game.activePlayer === auth.currentUser.uid;
-  };
+  }, [game]);
 
   // Check if user needs to confirm the game
-  const needsConfirmation = () => {
+  const needsConfirmation = useCallback(() => {
     if (!game || !auth.currentUser) return false;
     return game.status === "waiting_confirmation" && game.confirmedBy === auth.currentUser.uid;
-  };
+  }, [game]);
 
   // Load game data and user profiles
   useEffect(() => {
@@ -159,10 +238,10 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
     
     // Clean up listener on unmount
     return () => unsubscribe();
-  }, [id]);
+  }, [id, refreshNotifications]);
 
   // Handle accepting invitation
-  const handleAcceptInvitation = async () => {
+  const handleAcceptInvitation = useCallback(async () => {
     if (!id || !isPendingInvitation()) {
       setError("You cannot accept this invitation");
       return;
@@ -189,10 +268,10 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
     } finally {
       setIsSubmitting(false);
     }
-  };
+  }, [id, isPendingInvitation, refreshNotifications]);
 
   // Handle rejecting invitation
-  const handleRejectInvitation = async () => {
+  const handleRejectInvitation = useCallback(async () => {
     if (!id || !isPendingInvitation()) {
       setError("You cannot reject this invitation");
       return;
@@ -220,10 +299,10 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
     } finally {
       setIsSubmitting(false);
     }
-  };
+  }, [id, isPendingInvitation, rejectionReason, refreshNotifications, navigate]);
 
   // Handle starting the game
-  const handleStartGame = async () => {
+  const handleStartGame = useCallback(async () => {
     if (!id || !isAccepted()) {
       setError("This game is not ready to start");
       return;
@@ -250,10 +329,10 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
     } finally {
       setIsSubmitting(false);
     }
-  };
+  }, [id, isAccepted, refreshNotifications]);
 
   // Handle score submission
-  const handleScoreSubmit = async (e: React.FormEvent) => {
+  const handleScoreSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     
     if (!id || !isParticipant() || !game) {
@@ -301,10 +380,10 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
     } finally {
       setIsSubmitting(false);
     }
-  };
+  }, [id, isParticipant, game, canSubmitScores, creatorScore, opponentScore, refreshNotifications]);
 
   // Handle game confirmation
-  const handleConfirmation = async (isConfirmed: boolean) => {
+  const handleConfirmation = useCallback(async (isConfirmed: boolean) => {
     if (!id || !needsConfirmation() || !game) {
       setError("You cannot confirm this game");
       return;
@@ -331,39 +410,77 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
     } finally {
       setIsSubmitting(false);
     }
-  };
+  }, [id, needsConfirmation, game, refreshNotifications]);
 
-  // Render loading state
-  if (loading) {
-    return (
-      <div className="p-6 max-w-lg mx-auto text-zinc-900 dark:text-white">
-        <h1 className="text-2xl font-bold mb-6">Game Details</h1>
-        <div className="bg-white dark:bg-zinc-800 rounded-lg shadow p-6 flex justify-center">
+  // Memoized calculations for better performance
+  const gameStatus = useMemo(() => {
+    if (!game) return null;
+    
+    return {
+      isParticipant: isParticipant(),
+      isCreator: isCreator(),
+      isOpponent: isOpponent(),
+      canSubmitScores: canSubmitScores(),
+      isPendingInvitation: isPendingInvitation(),
+      isSentInvitation: isSentInvitation(),
+      isAccepted: isAccepted(),
+      isCurrentUserTurn: isCurrentUserTurn(),
+      needsConfirmation: needsConfirmation(),
+    };
+  }, [game, isParticipant, isCreator, isOpponent, canSubmitScores, isPendingInvitation, isSentInvitation, isAccepted, isCurrentUserTurn, needsConfirmation]);
+
+  // Memoized score validation
+  const scoreValidation = useMemo(() => {
+    if (!game) return { isValid: false, canSubmit: false };
+    
+    const maxScore = Math.max(creatorScore, opponentScore);
+    const isValid = creatorScore >= 0 && opponentScore >= 0;
+    const canSubmit = isValid && maxScore >= game.settings.pointsToWin;
+    
+    return { isValid, canSubmit, maxScore };
+  }, [game, creatorScore, opponentScore]);
+
+  // Memoized loading component
+  const LoadingComponent = useMemo(() => (
+    <div className="p-6 max-w-6xl mx-auto text-zinc-900 dark:text-white">
+      <h1 className="text-2xl font-bold mb-6">Game Details</h1>
+      <Card>
+        <CardContent className="flex justify-center p-6">
           <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
-        </div>
-      </div>
-    );
-  }
+        </CardContent>
+      </Card>
+    </div>
+  ), []);
 
-  // Render error state
-  if (error || !game) {
-    return (
-      <div className="p-6 max-w-lg mx-auto text-zinc-900 dark:text-white">
-        <h1 className="text-2xl font-bold mb-6">Game Details</h1>
-        <div className="bg-white dark:bg-zinc-800 rounded-lg shadow p-6">
+  // Memoized error component
+  const ErrorComponent = useMemo(() => (
+    <div className="p-6 max-w-6xl mx-auto text-zinc-900 dark:text-white">
+      <h1 className="text-2xl font-bold mb-6">Game Details</h1>
+      <Card>
+        <CardContent className="p-6">
           <div className="p-4 bg-red-100 border border-red-400 text-red-700 rounded mb-4">
             {error || "Game not found"}
           </div>
           <Link to="/games" className="inline-block px-4 py-2 bg-blue-600 text-white rounded-md">
             Back to Games
           </Link>
-        </div>
-      </div>
-    );
+        </CardContent>
+      </Card>
+    </div>
+  ), [error]);
+
+  // Render loading state
+  if (loading) {
+    return LoadingComponent;
+  }
+
+  // Render error state
+  if (error || !game) {
+    return ErrorComponent;
   }
 
   return (
-    <div className="p-6 max-w-lg mx-auto text-zinc-900 dark:text-white">
+    <div className="p-6 max-w-6xl mx-auto text-zinc-900 dark:text-white">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold">Game Details</h1>
         <Link to="/games" className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300">
@@ -371,7 +488,8 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
         </Link>
       </div>
 
-      <div className="bg-white dark:bg-zinc-800 rounded-lg shadow p-6">
+      <Card>
+        <CardContent className="p-6">
         {/* Game Status */}
         <div className="mb-6">
           <span className={`inline-block px-3 py-1 rounded-full text-sm font-medium 
@@ -400,15 +518,10 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
         </div>
 
         {/* Game Information */}
-        <div className="mb-6 grid grid-cols-2 gap-4">
-          <div className="p-3 bg-gray-50 dark:bg-zinc-700 rounded-md">
-            <p className="text-sm text-gray-500 dark:text-zinc-400">Game Mode</p>
-            <p className="font-medium">{game.settings.gameMode}</p>
-          </div>
-          <div className="p-3 bg-gray-50 dark:bg-zinc-700 rounded-md">
-            <p className="text-sm text-gray-500 dark:text-zinc-400">Points to Win</p>
-            <p className="font-medium">{game.settings.pointsToWin}</p>
-          </div>
+        <div className="mb-6 space-y-4">
+          <GameModeDisplay gameMode={game.settings.gameMode} />
+          <PointsDisplay points={game.settings.pointsToWin} />
+          <RulesetDisplay useBoricuaRules={game.settings.useBoricuaRules || false} />
         </div>
 
         {/* Participants */}
@@ -458,7 +571,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
         </div>
 
         {/* Invitation Actions - Only show if this is a pending invitation for the current user */}
-        {isPendingInvitation() && (
+        {gameStatus?.isPendingInvitation && (
           <div className="mb-6">
             <h2 className="text-lg font-semibold mb-3">Game Invitation</h2>
             <div className="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-900 rounded-md mb-4">
@@ -508,7 +621,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
         )}
         
         {/* Invitation Sent Status */}
-        {isSentInvitation() && (
+        {gameStatus?.isSentInvitation && (
           <div className="mb-6">
             <h2 className="text-lg font-semibold mb-3">Invitation Sent</h2>
             <div className="p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900 rounded-md mb-4">
@@ -521,7 +634,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
         )}
         
         {/* Ready to Play Status */}
-        {isAccepted() && (
+        {gameStatus?.isAccepted && (
           <div className="mb-6">
             <h2 className="text-lg font-semibold mb-3">Ready to Play</h2>
             <div className="p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-900 rounded-md mb-4">
@@ -561,11 +674,11 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
         )}
         
         {/* Score Submission - Only show if game is in progress and it's user's turn to submit scores */}
-        {game.status === "in_progress" && isParticipant() && (
+        {game.status === "in_progress" && gameStatus?.isParticipant && (
           <div className="mb-6">
             <h2 className="text-lg font-semibold mb-3">Submit Final Scores</h2>
             
-            {!canSubmitScores() ? (
+            {!gameStatus?.canSubmitScores ? (
               <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-900 rounded-md mb-4">
                 <p>It's not your turn to submit scores. Wait for the active player to finish their turn.</p>
                 <p className="mt-2 text-sm">
@@ -611,9 +724,9 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
                 </div>
                 <button
                   type="submit"
-                  disabled={isSubmitting || Math.max(creatorScore, opponentScore) < game.settings.pointsToWin}
+                  disabled={isSubmitting || !scoreValidation.canSubmit}
                   className={`w-full py-2 rounded-md font-medium ${
-                    isSubmitting || Math.max(creatorScore, opponentScore) < game.settings.pointsToWin
+                    isSubmitting || !scoreValidation.canSubmit
                       ? "bg-gray-300 text-gray-500 cursor-not-allowed dark:bg-zinc-700 dark:text-zinc-400"
                       : "bg-blue-600 text-white hover:bg-blue-700"
                   }`}
@@ -626,7 +739,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
         )}
 
         {/* Confirmation UI - Only show if game is waiting for confirmation from current user */}
-        {needsConfirmation() && (
+        {gameStatus?.needsConfirmation && (
           <div className="mb-6">
             <h2 className="text-lg font-semibold mb-3">Confirm Results</h2>
             <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-900 rounded-md mb-4">
@@ -697,7 +810,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
               </div>
               
               <p className="text-center font-medium">
-                {game.winner === (isCreator() ? game.createdBy : game.opponent)
+                {game.winner === (gameStatus?.isCreator ? game.createdBy : game.opponent)
                   ? "You won this game!"
                   : "You lost this game"}
               </p>
@@ -706,10 +819,10 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
         )}
 
         {/* Waiting for confirmation message */}
-        {game.status === "waiting_confirmation" && !needsConfirmation() && (
+        {game.status === "waiting_confirmation" && !gameStatus?.needsConfirmation && (
           <div className="p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900 rounded-md mb-4">
             <p className="text-center">
-              Waiting for {needsConfirmation() ? "you" : "the other player"} to confirm the results.
+              Waiting for {gameStatus?.needsConfirmation ? "you" : "the other player"} to confirm the results.
             </p>
           </div>
         )}
@@ -717,27 +830,31 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
         {/* Player turns indicator - show only during active gameplay */}
         {game.status === "in_progress" && game.activePlayer && (
           <div className={`p-4 mb-4 rounded-md ${
-            isCurrentUserTurn() 
+            gameStatus?.isCurrentUserTurn 
               ? "bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-900" 
               : "bg-gray-50 dark:bg-gray-900/20 border border-gray-200 dark:border-gray-900"
           }`}>
             <p className="text-center font-medium">
-              {isCurrentUserTurn() 
+              {gameStatus?.isCurrentUserTurn 
                 ? "It's your turn to play and submit the final scores" 
                 : `Waiting for ${game.activePlayer === game.createdBy 
                     ? creator?.displayName 
                     : opponent?.displayName} to play and submit the final scores`}
             </p>
-            {isCurrentUserTurn() && (
+            {gameStatus?.isCurrentUserTurn && (
               <p className="text-center text-sm mt-2 text-green-600 dark:text-green-400">
                 Play your game in person, then submit the final scores when finished
               </p>
             )}
           </div>
         )}
-      </div>
+        </CardContent>
+      </Card>
     </div>
   );
 };
 
-export default GameDetail;
+// Memoize the entire component for better performance
+const MemoizedGameDetail = memo(GameDetail);
+
+export default MemoizedGameDetail;
