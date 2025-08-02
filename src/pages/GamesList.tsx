@@ -7,6 +7,7 @@ import {
   rejectGameInvitation,
   startGame,
   isPlayerInActiveGame,
+  getLeagueById,
 } from "../firebase";
 import type { Game, UserProfile } from "../firebase";
 import {
@@ -69,10 +70,7 @@ interface GameTableRow extends Game {
   statusColor: string;
   gameInfo: string;
   result?: "Won" | "Lost" | null;
-  score?: {
-    player: number;
-    opponent: number;
-  };
+  leagueName?: string;
 }
 
 // Define columns for the games table
@@ -186,20 +184,22 @@ const createColumns = (
     },
   },
   {
-    accessorKey: "score",
-    header: "Score",
+    accessorKey: "leagueName",
+    header: "League",
     cell: ({ row }) => {
-      const game = row.original;
-      if (game.status !== "completed" || !game.scores) return null;
-      
-      const isCreator = auth.currentUser?.uid === game.createdBy;
-      const playerScore = isCreator ? game.scores.creator : game.scores.opponent;
-      const opponentScore = isCreator ? game.scores.opponent : game.scores.creator;
+      const leagueName = row.getValue("leagueName") as string | null;
+      if (!leagueName || leagueName === "Individual") {
+        return (
+          <span className="text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+            Individual
+          </span>
+        );
+      }
       
       return (
-        <div className="font-mono text-xs sm:text-sm whitespace-nowrap">
-          {playerScore || 0} - {opponentScore || 0}
-        </div>
+        <span className="inline-block px-1.5 sm:px-2 py-0.5 sm:py-1 text-xs font-medium rounded-full bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-100">
+          {leagueName}
+        </span>
       );
     },
   },
@@ -271,6 +271,7 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
   const [userProfiles, setUserProfiles] = useState<Record<string, UserProfile>>(
     {},
   );
+  const [leagueNames, setLeagueNames] = useState<Record<string, string>>({});
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [isInActiveGame, setIsInActiveGame] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -329,6 +330,30 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
       });
 
       setUserProfiles(profilesMap);
+
+      // Get league names for games that belong to leagues
+      const leagueIds = new Set<string>();
+      userGames.forEach((game) => {
+        if (game.leagueId) {
+          leagueIds.add(game.leagueId);
+        }
+      });
+
+      const leaguePromises = Array.from(leagueIds).map(async (leagueId) => {
+        const league = await getLeagueById(leagueId);
+        return league ? { id: leagueId, name: league.name } : null;
+      });
+
+      const leagues = (await Promise.all(leaguePromises)).filter(Boolean) as {
+        id: string;
+        name: string;
+      }[];
+      const leaguesMap: Record<string, string> = {};
+      leagues.forEach((league) => {
+        leaguesMap[league.id] = league.name;
+      });
+
+      setLeagueNames(leaguesMap);
 
       // Check for new invitations
       const newInvites = userGames.filter(
@@ -503,17 +528,6 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
       // Create game info string - simplified for mobile
       const gameInfo = game.settings.gameMode === "single" ? "Individual" : "Teams";
 
-      // Calculate score if game is completed
-      let score: { player: number; opponent: number } | undefined;
-      if (game.status === "completed" && game.scores) {
-        const playerScore = isCreator ? game.scores.creator : game.scores.opponent;
-        const opponentScore = isCreator ? game.scores.opponent : game.scores.creator;
-        score = {
-          player: playerScore || 0,
-          opponent: opponentScore || 0,
-        };
-      }
-
       return {
         ...game,
         opponentName: opponentData.name,
@@ -524,10 +538,10 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
         statusColor,
         gameInfo,
         result,
-        score,
+        leagueName: game.leagueId ? (leagueNames[game.leagueId] || "League Game") : "Individual",
       };
     });
-  }, [games, getOpponentData, formatDate]);
+  }, [games, getOpponentData, formatDate, leagueNames]);
 
   // Handle accepting a game invitation - memoized
   const handleAcceptInvitation = useCallback(async (gameId: string) => {

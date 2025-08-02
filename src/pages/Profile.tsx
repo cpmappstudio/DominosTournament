@@ -1,9 +1,10 @@
 import React, { useEffect, useState, memo, useCallback, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { auth, getUserProfile, getUserGames } from "../firebase";
+import { auth, getUserProfile, getUserGames, getUserLeaguesWithRanking } from "../firebase";
 import type { User } from "firebase/auth";
 import type { UserProfile } from "../firebase";
 import { getFirestore, doc, getDoc } from "firebase/firestore";
+import { LeagueCard, StatCard, TitleBadge } from "../components/ProfileComponents";
 import ProfileCard from "../components/ProfileCard";
 import {
   Card,
@@ -36,79 +37,6 @@ const ProfileImage = memo<{ user: User }>(({ user }) => (
   )
 ));
 ProfileImage.displayName = 'ProfileImage';
-
-const TitleBadge = memo<{ stats?: { gamesWon: number } | null }>(({ stats }) => {
-  const calculateTitle = useCallback((gamesWon: number): string => {
-    if (gamesWon >= 25) return "Duro del 6";
-    if (gamesWon >= 15) return "Tranquero";
-    if (gamesWon >= 8) return "Matador";
-    return "Novice";
-  }, []);
-
-  const title = useMemo(() => 
-    stats ? calculateTitle(stats.gamesWon) : "New Player",
-    [stats, calculateTitle]
-  );
-
-  return (
-    <div className="mt-3">
-      <span className="inline-block px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-100">
-        {title}
-      </span>
-    </div>
-  );
-});
-TitleBadge.displayName = 'TitleBadge';
-
-const StatCard = memo<{ 
-  title: string; 
-  value: number | string; 
-  color: string;
-  className?: string;
-}>(({ title, value, color, className = "" }) => (
-  <div className={`p-3 sm:p-4 bg-gray-50 dark:bg-zinc-700 rounded-lg text-center ${className}`}>
-    <p className="text-xs sm:text-sm text-zinc-600 dark:text-zinc-400 mb-1">
-      {title}
-    </p>
-    <p className={`text-lg sm:text-2xl font-bold ${color}`}>
-      {value}
-    </p>
-  </div>
-));
-StatCard.displayName = 'StatCard';
-
-const LeagueCard = memo<{ 
-  league: { id: string; name: string; photoURL?: string; description?: string } 
-}>(({ league }) => (
-  <a
-    href={`/leagues/${league.id}`}
-    className="group flex items-center gap-3 px-4 py-3 rounded-lg  bg-gray-50 dark:bg-zinc-700 hover:bg-blue-100 dark:hover:bg-blue-900 transition-colors min-w-[220px] cursor-pointer"
-    style={{ textDecoration: "none" }}
-  >
-    {league.photoURL ? (
-      <img
-        src={league.photoURL}
-        alt={league.name}
-        className="w-10 h-10 rounded-full object-cover border border-gray-300 dark:border-gray-600"
-      />
-    ) : (
-      <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-bold text-lg">
-        {league.name.charAt(0).toUpperCase()}
-      </div>
-    )}
-    <div className="flex flex-col min-w-0">
-      <span className="font-medium text-zinc-900 dark:text-white truncate group-hover:text-blue-700 dark:group-hover:text-blue-200">
-        {league.name}
-      </span>
-      {league.description && (
-        <span className="text-xs text-zinc-500 dark:text-zinc-400 truncate mt-0.5">
-          {league.description}
-        </span>
-      )}
-    </div>
-  </a>
-));
-LeagueCard.displayName = 'LeagueCard';
 
 const GameRow = memo<{ game: GameDisplay; onGameClick: (gameId: string) => void }>(({ game, onGameClick }) => {
   const formatDate = useCallback((dateString: string): string => {
@@ -295,7 +223,15 @@ const Profile = memo<{ user?: User }>(({ user: propUser }) => {
   const [user, setUser] = useState<User | null>(propUser || null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [recentGames, setRecentGames] = useState<GameDisplay[]>([]);
-  const [userLeagues, setUserLeagues] = useState<{id: string, name: string, settings: any, photoURL?: string, description?: string}[]>([]);
+  const [userLeagues, setUserLeagues] = useState<{
+    id: string;
+    name: string;
+    settings: any;
+    photoURL?: string;
+    description?: string;
+    rank?: number;
+    totalMembers?: number;
+  }[]>([]);
   const [loading, setLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState({ profile: true, games: true, leagues: true });
 
@@ -314,10 +250,9 @@ const Profile = memo<{ user?: User }>(({ user: propUser }) => {
       setDataLoading({ profile: true, games: true, leagues: true });
 
       // Fetch all data in parallel for faster loading
-      const [profile, games, { getUserLeagues }] = await Promise.all([
+      const [profile, games] = await Promise.all([
         getUserProfile(currentUser.uid),
-        getUserGames(),
-        import("../firebase")
+        getUserGames()
       ]);
 
       // Set profile immediately (fastest to show)
@@ -366,7 +301,7 @@ const Profile = memo<{ user?: User }>(({ user: propUser }) => {
       // Fetch leagues in parallel with games processing
       const [gameDisplays, leagues] = await Promise.all([
         Promise.all(gameDisplaysPromises),
-        getUserLeagues()
+        getUserLeaguesWithRanking(currentUser.uid)
       ]);
 
       setRecentGames(gameDisplays);
@@ -449,7 +384,9 @@ const Profile = memo<{ user?: User }>(({ user: propUser }) => {
             <p className="text-sm sm:text-base text-zinc-600 dark:text-zinc-400 mt-1 break-all sm:break-words">
               {user.email}
             </p>
-            <TitleBadge stats={userProfile?.stats} />
+            <div className="mt-3">
+              <TitleBadge gamesWon={userProfile?.stats?.gamesWon || 0} />
+            </div>
           </div>
         </div>
       </ProfileCard>
@@ -466,7 +403,12 @@ const Profile = memo<{ user?: User }>(({ user: propUser }) => {
         ) : (
           <div className="flex flex-wrap gap-4">
             {userLeagues.map((league) => (
-              <LeagueCard key={league.id} league={league} />
+              <LeagueCard 
+                key={league.id} 
+                league={league} 
+                showRanking={true}
+                href={`/leagues/${league.id}`}
+              />
             ))}
           </div>
         )}

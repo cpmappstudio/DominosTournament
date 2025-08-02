@@ -988,6 +988,198 @@ export const updateUsername = async (userId: string, username: string): Promise<
   }
 };
 
+// Get all active leagues with their rankings
+export const getAllLeaguesWithRankings = async (): Promise<{
+  id: string;
+  name: string;
+  description?: string;
+  photoURL?: string;
+  rankings: RankingEntry[];
+}[]> => {
+  try {
+    // Get all active leagues
+    const leaguesQuery = query(
+      collection(db, "leagues"),
+      where("status", "==", "active"),
+      orderBy("name", "asc"),
+      limit(DEFAULT_QUERY_LIMIT)
+    );
+    
+    const leaguesSnapshot = await getDocs(leaguesQuery);
+    const leagues = [];
+    
+    for (const leagueDoc of leaguesSnapshot.docs) {
+      const leagueData = leagueDoc.data();
+      
+      // Get league rankings
+      const rankings = await getLeagueRankings(leagueDoc.id);
+      
+      leagues.push({
+        id: leagueDoc.id,
+        name: leagueData.name,
+        description: leagueData.description,
+        photoURL: leagueData.photoURL,
+        rankings
+      });
+    }
+    
+    return leagues;
+  } catch (error) {
+    console.error("Error getting leagues with rankings:", error);
+    return [];
+  }
+};
+
+// Get rankings for a specific league
+export const getLeagueRankings = async (leagueId: string): Promise<RankingEntry[]> => {
+  try {
+    const db = getFirestore();
+    
+    // Get all members of the league first
+    const memberQuery = query(
+      collection(db, "leagueMemberships"),
+      where("leagueId", "==", leagueId),
+      where("status", "==", "active"),
+      limit(DEFAULT_QUERY_LIMIT)
+    );
+
+    const memberSnap = await getDocs(memberQuery);
+    const leagueUserIds: string[] = [];
+    memberSnap.forEach((doc) => {
+      leagueUserIds.push(doc.data().userId);
+    });
+
+    if (leagueUserIds.length === 0) {
+      return [];
+    }
+
+    // Get league games (games with leagueId)
+    const gamesQuery = query(
+      collection(db, "games"),
+      where("leagueId", "==", leagueId),
+      where("status", "==", "completed"),
+      limit(DEFAULT_QUERY_LIMIT)
+    );
+
+    const gamesSnapshot = await getDocs(gamesQuery);
+    
+    // Calculate league-specific statistics
+    const playerStats: Record<string, {
+      gamesPlayed: number;
+      gamesWon: number;
+      totalPoints: number;
+      userId: string;
+    }> = {};
+
+    // Initialize stats for all league members
+    leagueUserIds.forEach(userId => {
+      playerStats[userId] = {
+        gamesPlayed: 0,
+        gamesWon: 0,
+        totalPoints: 0,
+        userId
+      };
+    });
+
+    // Process games to calculate stats
+    gamesSnapshot.forEach((doc) => {
+      const game = doc.data() as {
+        createdBy: string;
+        opponent: string;
+        winner?: string;
+        scores?: { creator: number; opponent: number };
+      };
+
+      // Only count if both players are league members
+      if (leagueUserIds.includes(game.createdBy) && leagueUserIds.includes(game.opponent)) {
+        // Update games played
+        playerStats[game.createdBy].gamesPlayed++;
+        playerStats[game.opponent].gamesPlayed++;
+
+        // Update wins and points based on winner
+        if (game.winner === game.createdBy) {
+          playerStats[game.createdBy].gamesWon++;
+          playerStats[game.createdBy].totalPoints += 3; // Points for win
+          playerStats[game.opponent].totalPoints += 0; // Points for loss
+        } else if (game.winner === game.opponent) {
+          playerStats[game.opponent].gamesWon++;
+          playerStats[game.opponent].totalPoints += 3; // Points for win
+          playerStats[game.createdBy].totalPoints += 0; // Points for loss
+        } else {
+          // Draw or no winner - give 1 point each
+          playerStats[game.createdBy].totalPoints += 1;
+          playerStats[game.opponent].totalPoints += 1;
+        }
+      }
+    });
+
+    // Get user display names
+    const userPromises = leagueUserIds.map(async (userId) => {
+      try {
+        const userDoc = await getDocs(query(
+          collection(db, "users"),
+          where("__name__", "==", userId)
+        ));
+        
+        if (!userDoc.empty) {
+          const userData = userDoc.docs[0].data();
+          return {
+            userId,
+            displayName: userData.displayName || userData.username || userId,
+            username: userData.username,
+            photoURL: userData.photoURL
+          };
+        }
+      } catch (error) {
+        console.error(`Error fetching user ${userId}:`, error);
+      }
+      return {
+        userId,
+        displayName: userId,
+        username: userId,
+        photoURL: undefined
+      };
+    });
+
+    const userDetails = await Promise.all(userPromises);
+    const userMap = new Map(userDetails.map(user => [user.userId, user]));
+
+    // Convert to ranking entries and sort
+    const rankings = Object.values(playerStats)
+      .filter(stats => stats.gamesPlayed > 0 || leagueUserIds.includes(stats.userId)) // Include all league members
+      .map(stats => {
+        const userDetail = userMap.get(stats.userId);
+        const winRate = stats.gamesPlayed > 0 ? (stats.gamesWon / stats.gamesPlayed) * 100 : 0;
+        return {
+          userId: stats.userId,
+          displayName: userDetail?.displayName || stats.userId,
+          username: userDetail?.username || stats.userId,
+          photoURL: userDetail?.photoURL,
+          gamesPlayed: stats.gamesPlayed,
+          gamesWon: stats.gamesWon,
+          totalPoints: stats.totalPoints,
+          winRate: winRate,
+          rank: 0 // Will be set after sorting
+        } as RankingEntry;
+      })
+      .sort((a, b) => {
+        // Sort by total points first, then by win rate, then by games won
+        if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
+        if (b.winRate !== a.winRate) return b.winRate - a.winRate;
+        return b.gamesWon - a.gamesWon;
+      })
+      .map((player, index) => ({
+        ...player,
+        rank: index + 1
+      }));
+
+    return rankings;
+  } catch (error) {
+    console.error("Error getting league rankings:", error);
+    return [];
+  }
+};
+
 // Get user's leagues for game creation
 export const getUserLeagues = async (): Promise<{id: string, name: string, settings: any}[]> => {
   try {
@@ -1028,6 +1220,68 @@ export const getUserLeagues = async (): Promise<{id: string, name: string, setti
   }
 };
 
+// Get leagues for any user with ranking information
+export const getUserLeaguesWithRanking = async (userId: string): Promise<{
+  id: string; 
+  name: string; 
+  settings: any;
+  photoURL?: string;
+  description?: string;
+  rank?: number;
+  totalMembers?: number;
+}[]> => {
+  try {
+    // Get user's league memberships
+    const membershipsQuery = query(
+      collection(db, "leagueMemberships"),
+      where("userId", "==", userId),
+      where("status", "==", "active"),
+      limit(DEFAULT_QUERY_LIMIT)
+    );
+    
+    const membershipsSnap = await getDocs(membershipsQuery);
+    const leagueIds = membershipsSnap.docs.map(doc => doc.data().leagueId);
+    
+    if (leagueIds.length === 0) return [];
+    
+    // Get league details and rankings in parallel
+    const leaguePromises = leagueIds.map(async (leagueId) => {
+      try {
+        // Get league details
+        const leagueDoc = await getDoc(doc(db, "leagues", leagueId));
+        if (!leagueDoc.exists() || leagueDoc.data().status !== "active") {
+          return null;
+        }
+
+        const leagueData = leagueDoc.data();
+        
+        // Get league rankings to find user's position
+        const rankings = await getLeagueRankings(leagueId);
+        const userRanking = rankings.find(r => r.userId === userId);
+        
+        return {
+          id: leagueId,
+          name: leagueData.name,
+          settings: leagueData.settings,
+          photoURL: leagueData.photoURL || null,
+          description: leagueData.description || null,
+          rank: userRanking?.rank,
+          totalMembers: rankings.length
+        };
+      } catch (error) {
+        console.error(`Error getting league ${leagueId}:`, error);
+        return null;
+      }
+    });
+
+    const leagues = (await Promise.all(leaguePromises)).filter(Boolean);
+    return leagues as any[];
+  } catch (error) {
+    console.error("Error getting user leagues with ranking:", error);
+    return [];
+  }
+};
+
 // Get all active leagues (for game creation dropdown)
 export const getAllActiveLeagues = async (): Promise<{id: string, name: string, settings: any}[]> => {
   try {
@@ -1047,6 +1301,27 @@ export const getAllActiveLeagues = async (): Promise<{id: string, name: string, 
   } catch (error) {
     console.error("Error getting all active leagues:", error);
     return [];
+  }
+};
+
+// Get league by ID
+export const getLeagueById = async (leagueId: string): Promise<{id: string, name: string} | null> => {
+  try {
+    const leagueDoc = doc(db, "leagues", leagueId);
+    const leagueSnap = await getDoc(leagueDoc);
+    
+    if (leagueSnap.exists()) {
+      const data = leagueSnap.data();
+      return {
+        id: leagueSnap.id,
+        name: data.name
+      };
+    }
+    
+    return null;
+  } catch (error) {
+    console.error("Error getting league by ID:", error);
+    return null;
   }
 };
 

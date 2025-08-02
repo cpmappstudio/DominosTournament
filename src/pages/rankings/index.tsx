@@ -1,1043 +1,532 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo, memo } from "react";
 import {
-  getFirestore,
-  collection,
-  query,
-  getDocs,
-  where,
-} from "firebase/firestore";
-import {
-  auth,
+  getAllLeaguesWithRankings,
   calculateTitle,
-  getRankingsByTimePeriod,
   RankingEntry as RankingEntryType,
-  getAllSeasons,
-  getCurrentSeason,
-  getDefaultSeason,
+  UserProfile,
+  getUserProfile,
 } from "../../firebase";
-import { Season } from "../../models/league";
-import CustomSelect from "../../components/custom-select";
+import { Timestamp } from "firebase/firestore";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "../../components/ui/card";
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+} from "../../components/ui/avatar";
+import {
+  ColumnDef,
+  ColumnFiltersState,
+  flexRender,
+  getCoreRowModel,
+  getFilteredRowModel,
+  getPaginationRowModel,
+  getSortedRowModel,
+  SortingState,
+  useReactTable,
+} from "@tanstack/react-table";
+import { ArrowUpDown } from "lucide-react";
+import { Button } from "../../components/ui/button";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../../components/ui/table";
+import UserProfileDialog from "../../components/UserProfileDialog";
 
 // Use the RankingEntry type from firebase.ts
 type RankingEntry = RankingEntryType;
 
-interface RankingFilter {
-  leagueId: string | null;
-  timeFrame: "all" | "month" | "week";
-  gameMode: "all" | "individual" | "teams";
-  seasonId: string | null;
+// Helper function to convert RankingEntry to UserProfile
+const convertRankingEntryToUserProfile = (entry: RankingEntry): UserProfile => {
+  return {
+    uid: entry.userId,
+    displayName: entry.displayName,
+    username: entry.username,
+    email: "", // Not available in RankingEntry
+    photoURL: entry.photoURL,
+    createdAt: Timestamp.now(), // Placeholder timestamp
+    stats: {
+      gamesPlayed: entry.gamesPlayed,
+      gamesWon: entry.gamesWon,
+      totalPoints: entry.totalPoints,
+      globalRank: entry.rank,
+      // These properties are not available in RankingEntry, so we provide defaults
+      winStreak: 0, // Not available in RankingEntry
+      maxWinStreak: 0, // Not available in RankingEntry
+    },
+    hasSetUsername: !!entry.username,
+  };
+};
+
+// League with rankings interface
+interface LeagueWithRankings {
+  id: string;
+  name: string;
+  description?: string;
+  photoURL?: string;
+  rankings: RankingEntry[];
 }
 
-const Rankings: React.FC = () => {
-  const [rankings, setRankings] = useState<RankingEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<RankingFilter>({
-    leagueId: null,
-    timeFrame: "all",
-    gameMode: "all",
-    seasonId: null,
-  });
+// Extended RankingEntry type for table display
+interface RankingTableRow extends RankingEntry {
+  formattedTitle: string;
+  positionDisplay: string;
+  playerDisplay: React.ReactNode;
+}
 
-  const [leagues, setLeagues] = useState<{ id: string; name: string }[]>([]);
-  const [seasons, setSeasons] = useState<Season[]>([]);
-  const [selectedPlayer, setSelectedPlayer] = useState<RankingEntry | null>(
-    null,
+// Define columns for the rankings table
+const createRankingColumns = (
+  onPlayerClick: (player: RankingEntry) => void
+): ColumnDef<RankingTableRow>[] => [
+  {
+    accessorKey: "positionDisplay",
+    header: "Rank",
+    cell: ({ row }) => (
+      <div className="text-xs sm:text-sm font-bold text-center">
+        #{row.getValue("positionDisplay")}
+      </div>
+    ),
+  },
+  {
+    accessorKey: "playerDisplay",
+    header: "Player",
+    cell: ({ row }) => row.getValue("playerDisplay"),
+  },
+  {
+    accessorKey: "gamesPlayed",
+    header: ({ column }) => {
+      return (
+        <Button
+          variant="ghost"
+          onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+          className="p-0 h-auto font-semibold hover:bg-transparent"
+        >
+          Games
+          <ArrowUpDown className="ml-2 h-4 w-4" />
+        </Button>
+      )
+    },
+    cell: ({ row }) => (
+      <div className="text-xs sm:text-sm text-center">{row.getValue("gamesPlayed")}</div>
+    ),
+  },
+  {
+    accessorKey: "gamesWon",
+    header: ({ column }) => {
+      return (
+        <Button
+          variant="ghost"
+          onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+          className="p-0 h-auto font-semibold hover:bg-transparent"
+        >
+          Wins
+          <ArrowUpDown className="ml-2 h-4 w-4" />
+        </Button>
+      )
+    },
+    cell: ({ row }) => (
+      <div className="text-xs sm:text-sm text-center">{row.getValue("gamesWon")}</div>
+    ),
+  },
+  {
+    accessorKey: "winPercentage",
+    header: ({ column }) => {
+      return (
+        <Button
+          variant="ghost"
+          onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+          className="p-0 h-auto font-semibold hover:bg-transparent"
+        >
+          Win %
+          <ArrowUpDown className="ml-2 h-4 w-4" />
+        </Button>
+      )
+    },
+    cell: ({ row }) => {
+      const entry = row.original;
+      const winPercentage = entry.gamesPlayed > 0 
+        ? ((entry.gamesWon / entry.gamesPlayed) * 100).toFixed(1)
+        : "0.0";
+      return (
+        <div className="text-xs sm:text-sm text-center font-medium">
+          {winPercentage}%
+        </div>
+      );
+    },
+  },
+  {
+    accessorKey: "totalPoints",
+    header: ({ column }) => {
+      return (
+        <Button
+          variant="ghost"
+          onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+          className="p-0 h-auto font-semibold hover:bg-transparent"
+        >
+          Points
+          <ArrowUpDown className="ml-2 h-4 w-4" />
+        </Button>
+      )
+    },
+    cell: ({ row }) => (
+      <div className="text-xs sm:text-sm text-center font-mono">
+        {row.getValue("totalPoints")}
+      </div>
+    ),
+  },
+  {
+    accessorKey: "formattedTitle",
+    header: "Title",
+    cell: ({ row }) => (
+      <div className="text-xs sm:text-sm font-medium text-center">
+        {row.getValue("formattedTitle")}
+      </div>
+    ),
+  },
+];
+
+// Memoized Loading Component
+const LoadingState = memo(() => (
+  <div className="p-2 sm:p-4 lg:p-6 w-full lg:max-w-6xl lg:mx-auto">
+    <h1 className="sr-only">Rankings</h1>
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-xl sm:text-2xl">Rankings</CardTitle>
+      </CardHeader>
+      <CardContent className="flex justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
+      </CardContent>
+    </Card>
+  </div>
+));
+
+// Memoized No Data State
+const NoDataState = memo(() => (
+  <Card>
+    <CardContent className="text-center pt-6">
+      <p className="mb-4">No leagues or ranking data available.</p>
+    </CardContent>
+  </Card>
+));
+
+// League Rankings Table Component
+const LeagueRankingsTable: React.FC<{
+  league: LeagueWithRankings;
+  onPlayerClick: (player: RankingEntry) => void;
+}> = memo(({ league, onPlayerClick }) => {
+  // Table states
+  const [sorting, setSorting] = useState<SortingState>([])
+  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
+
+  // Helper function to create player display with avatar
+  const createPlayerDisplay = useCallback((entry: RankingEntry) => {
+    return (
+      <div className="font-medium text-xs sm:text-sm flex items-center space-x-2">
+        <Avatar className="h-6 w-6 sm:h-8 sm:w-8">
+          <AvatarImage src={entry.photoURL || undefined} alt={entry.displayName} />
+          <AvatarFallback className="text-xs">
+            {entry.displayName.substring(0, 2).toUpperCase()}
+          </AvatarFallback>
+        </Avatar>
+        <div className="truncate max-w-20 sm:max-w-none" title={entry.displayName}>
+          {entry.displayName}
+        </div>
+      </div>
+    );
+  }, []);
+
+  // Transform rankings data for table display
+  const tableData = useMemo(() => {
+    return league.rankings.map((entry, index): RankingTableRow => ({
+      ...entry,
+      formattedTitle: calculateTitle(entry.gamesWon),
+      positionDisplay: (index + 1).toString(),
+      playerDisplay: createPlayerDisplay(entry),
+    }));
+  }, [league.rankings, createPlayerDisplay]);
+
+  // Create columns with click handler
+  const columns = useMemo(() => 
+    createRankingColumns(onPlayerClick), 
+    [onPlayerClick]
   );
 
-  const fetchRankings = useCallback(async () => {
+  // Configure table
+  const table = useReactTable({
+    data: tableData,
+    columns,
+    onSortingChange: setSorting,
+    onColumnFiltersChange: setColumnFilters,
+    getCoreRowModel: getCoreRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    state: {
+      sorting,
+      columnFilters,
+    },
+  });
+
+  if (league.rankings.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center space-x-3">
+            {league.photoURL && (
+              <Avatar className="h-8 w-8">
+                <AvatarImage src={league.photoURL} alt={league.name} />
+                <AvatarFallback>
+                  {league.name.substring(0, 2).toUpperCase()}
+                </AvatarFallback>
+              </Avatar>
+            )}
+            <span>{league.name}</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-center text-zinc-600 dark:text-zinc-400">
+            No rankings available for this league yet.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center space-x-3">
+          {league.photoURL && (
+            <Avatar className="h-8 w-8">
+              <AvatarImage src={league.photoURL} alt={league.name} />
+              <AvatarFallback>
+                {league.name.substring(0, 2).toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
+          )}
+          <span>{league.name}</span>
+        </CardTitle>
+        {league.description && (
+          <p className="text-sm text-zinc-600 dark:text-zinc-400 mt-1">
+            {league.description}
+          </p>
+        )}
+      </CardHeader>
+      <CardContent>
+        <div className="w-full">
+          {/* Table */}
+          <div className="overflow-hidden rounded-md border">
+            <Table>
+              <TableHeader>
+                {table.getHeaderGroups().map((headerGroup) => (
+                  <TableRow key={headerGroup.id}>
+                    {headerGroup.headers.map((header) => (
+                      <TableHead key={header.id}>
+                        {header.isPlaceholder
+                          ? null
+                          : flexRender(
+                              header.column.columnDef.header,
+                              header.getContext()
+                            )}
+                      </TableHead>
+                    ))}
+                  </TableRow>
+                ))}
+              </TableHeader>
+              <TableBody>
+                {table.getRowModel().rows?.length ? (
+                  table.getRowModel().rows.map((row) => (
+                    <TableRow
+                      key={row.id}
+                      className="hover:bg-gray-50 dark:hover:bg-zinc-700/50 cursor-pointer"
+                      onClick={() => onPlayerClick(row.original)}
+                    >
+                      {row.getVisibleCells().map((cell) => (
+                        <TableCell key={cell.id}>
+                          {flexRender(
+                            cell.column.columnDef.cell,
+                            cell.getContext()
+                          )}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  ))
+                ) : (
+                  <TableRow>
+                    <TableCell
+                      colSpan={columns.length}
+                      className="h-24 text-center"
+                    >
+                      No rankings found.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+          
+          {/* Pagination */}
+          {table.getPageCount() > 1 && (
+            <div className="flex items-center justify-end space-x-2 py-4">
+              <div className="text-muted-foreground flex-1 text-sm">
+                Page {table.getState().pagination.pageIndex + 1} of{" "}
+                {table.getPageCount()}
+              </div>
+              <div className="space-x-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => table.previousPage()}
+                  disabled={!table.getCanPreviousPage()}
+                >
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => table.nextPage()}
+                  disabled={!table.getCanNextPage()}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+});
+
+const Rankings: React.FC = () => {
+  const [leagues, setLeagues] = useState<LeagueWithRankings[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedPlayer, setSelectedPlayer] = useState<UserProfile | null>(null);
+  const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false);
+
+  const fetchLeaguesWithRankings = useCallback(async () => {
     setLoading(true);
     setError(null);
 
     try {
-      let filteredRankings: RankingEntry[] = [];
-
-      if (filter.leagueId) {
-        // League-specific rankings - calculate from league games only
-        const db = getFirestore();
-        
-        // Get all members of the league first
-        const memberQuery = query(
-          collection(db, "leagueMemberships"),
-          where("leagueId", "==", filter.leagueId),
-          where("status", "==", "active"),
-        );
-
-        const memberSnap = await getDocs(memberQuery);
-        const leagueUserIds: string[] = [];
-        memberSnap.forEach((doc) => {
-          leagueUserIds.push(doc.data().userId);
-        });
-
-        if (leagueUserIds.length === 0) {
-          setRankings([]);
-          return;
-        }
-
-        // Get league games (games with leagueId)
-        let gamesQuery = query(
-          collection(db, "games"),
-          where("leagueId", "==", filter.leagueId),
-          where("status", "==", "completed")
-        );
-
-        // Build filter conditions array
-        const conditions = [
-          where("leagueId", "==", filter.leagueId),
-          where("status", "==", "completed")
-        ];
-
-        // Add game mode filter if specified
-        if (filter.gameMode !== "all") {
-          conditions.push(where("settings.gameMode", "==", filter.gameMode));
-        }
-
-        // Add season filter if specified
-        if (filter.seasonId) {
-          const selectedSeason = seasons.find(s => s.id === filter.seasonId);
-          if (selectedSeason) {
-            conditions.push(where("updatedAt", ">=", selectedSeason.startDate));
-            conditions.push(where("updatedAt", "<=", selectedSeason.endDate));
-          }
-        } else if (filter.timeFrame !== "all") {
-          // Add time filter if no season is selected
-          const timeLimit = new Date();
-          if (filter.timeFrame === "week") {
-            timeLimit.setDate(timeLimit.getDate() - 7);
-          } else if (filter.timeFrame === "month") {
-            timeLimit.setMonth(timeLimit.getMonth() - 1);
-          }
-          conditions.push(where("updatedAt", ">=", timeLimit));
-        }
-
-        // Apply all conditions to the query
-        gamesQuery = query(collection(db, "games"), ...conditions);
-
-        const gamesSnapshot = await getDocs(gamesQuery);
-        
-        // Calculate league-specific statistics
-        const playerStats: Record<string, {
-          gamesPlayed: number;
-          gamesWon: number;
-          totalPoints: number;
-          userId: string;
-        }> = {};
-
-        // Initialize stats for all league members
-        leagueUserIds.forEach(userId => {
-          playerStats[userId] = {
-            gamesPlayed: 0,
-            gamesWon: 0,
-            totalPoints: 0,
-            userId
-          };
-        });
-
-        // Process games to calculate stats
-        gamesSnapshot.forEach((doc) => {
-          const game = doc.data() as {
-            createdBy: string;
-            opponent: string;
-            winner?: string;
-            scores?: { creator: number; opponent: number };
-          };
-
-          // Only count if both players are league members
-          if (leagueUserIds.includes(game.createdBy) && leagueUserIds.includes(game.opponent)) {
-            // Update games played
-            playerStats[game.createdBy].gamesPlayed++;
-            playerStats[game.opponent].gamesPlayed++;
-
-            // Update wins and points based on winner
-            if (game.winner === game.createdBy) {
-              playerStats[game.createdBy].gamesWon++;
-              playerStats[game.createdBy].totalPoints += 3; // Points for win
-              playerStats[game.opponent].totalPoints += 0; // Points for loss
-            } else if (game.winner === game.opponent) {
-              playerStats[game.opponent].gamesWon++;
-              playerStats[game.opponent].totalPoints += 3; // Points for win
-              playerStats[game.createdBy].totalPoints += 0; // Points for loss
-            } else {
-              // Draw or no winner - give 1 point each
-              playerStats[game.createdBy].totalPoints += 1;
-              playerStats[game.opponent].totalPoints += 1;
-            }
-          }
-        });
-
-        // Get user display names
-        const userPromises = leagueUserIds.map(async (userId) => {
-          try {
-            const userDoc = await getDocs(query(
-              collection(db, "users"),
-              where("__name__", "==", userId)
-            ));
-            
-            if (!userDoc.empty) {
-              const userData = userDoc.docs[0].data();
-              return {
-                userId,
-                displayName: userData.displayName || userData.username || userId,
-                username: userData.username,
-                photoURL: userData.photoURL
-              };
-            }
-          } catch (error) {
-            console.error(`Error fetching user ${userId}:`, error);
-          }
-          return {
-            userId,
-            displayName: userId,
-            username: userId,
-            photoURL: undefined
-          };
-        });
-
-        const userDetails = await Promise.all(userPromises);
-        const userMap = new Map(userDetails.map(user => [user.userId, user]));
-
-        // Convert to ranking entries and sort
-        filteredRankings = Object.values(playerStats)
-          .filter(stats => stats.gamesPlayed > 0 || leagueUserIds.includes(stats.userId)) // Include all league members
-          .map(stats => {
-            const userDetail = userMap.get(stats.userId);
-            return {
-              userId: stats.userId,
-              displayName: userDetail?.displayName || stats.userId,
-              username: userDetail?.username || stats.userId,
-              photoURL: userDetail?.photoURL,
-              gamesPlayed: stats.gamesPlayed,
-              gamesWon: stats.gamesWon,
-              totalPoints: stats.totalPoints,
-              winRate: stats.gamesPlayed > 0 ? (stats.gamesWon / stats.gamesPlayed) * 100 : 0,
-              rank: 0 // Will be set after sorting
-            } as RankingEntry;
-          })
-          .sort((a, b) => {
-            // Sort by total points first, then by win rate, then by games won
-            if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
-            if (b.winRate !== a.winRate) return b.winRate - a.winRate;
-            return b.gamesWon - a.gamesWon;
-          })
-          .map((player, index) => ({
-            ...player,
-            rank: index + 1
-          }));
-
-      } else {
-        // Global rankings - handle season filtering or time period
-        let timeFrame = filter.timeFrame;
-        
-        // If season is selected, override time frame filtering
-        if (filter.seasonId) {
-          // For global rankings with season, we need to fetch games within season dates
-          const selectedSeason = seasons.find(s => s.id === filter.seasonId);
-          if (selectedSeason) {
-            const db = getFirestore();
-            
-            // Build conditions for global games within season
-            const conditions = [
-              where("status", "==", "completed"),
-              where("updatedAt", ">=", selectedSeason.startDate),
-              where("updatedAt", "<=", selectedSeason.endDate)
-            ];
-
-            // Add game mode filter if specified
-            if (filter.gameMode !== "all") {
-              conditions.push(where("settings.gameMode", "==", filter.gameMode));
-            }
-
-            const gamesQuery = query(collection(db, "games"), ...conditions);
-            const gamesSnapshot = await getDocs(gamesQuery);
-
-            // Calculate rankings from season games
-            const playerStats: Record<string, {
-              gamesPlayed: number;
-              gamesWon: number;
-              totalPoints: number;
-              userId: string;
-            }> = {};
-
-            // Process games to calculate stats
-            gamesSnapshot.forEach((doc) => {
-              const game = doc.data() as {
-                createdBy: string;
-                opponent: string;
-                winner?: string;
-                scores?: { creator: number; opponent: number };
-              };
-
-              // Initialize player stats if not exists
-              if (!playerStats[game.createdBy]) {
-                playerStats[game.createdBy] = {
-                  gamesPlayed: 0,
-                  gamesWon: 0,
-                  totalPoints: 0,
-                  userId: game.createdBy
-                };
-              }
-              if (!playerStats[game.opponent]) {
-                playerStats[game.opponent] = {
-                  gamesPlayed: 0,
-                  gamesWon: 0,
-                  totalPoints: 0,
-                  userId: game.opponent
-                };
-              }
-
-              // Update games played
-              playerStats[game.createdBy].gamesPlayed++;
-              playerStats[game.opponent].gamesPlayed++;
-
-              // Update wins and points based on winner
-              if (game.winner === game.createdBy) {
-                playerStats[game.createdBy].gamesWon++;
-                playerStats[game.createdBy].totalPoints += 3; // Points for win
-                playerStats[game.opponent].totalPoints += 0; // Points for loss
-              } else if (game.winner === game.opponent) {
-                playerStats[game.opponent].gamesWon++;
-                playerStats[game.opponent].totalPoints += 3; // Points for win
-                playerStats[game.createdBy].totalPoints += 0; // Points for loss
-              } else {
-                // Draw or no winner - give 1 point each
-                playerStats[game.createdBy].totalPoints += 1;
-                playerStats[game.opponent].totalPoints += 1;
-              }
-            });
-
-            // Get user display names for global players
-            const userIds = Object.keys(playerStats);
-            const userPromises = userIds.map(async (userId) => {
-              try {
-                const userDoc = await getDocs(query(
-                  collection(db, "users"),
-                  where("__name__", "==", userId)
-                ));
-                
-                if (!userDoc.empty) {
-                  const userData = userDoc.docs[0].data();
-                  return {
-                    userId,
-                    displayName: userData.displayName || userData.username || userId,
-                    username: userData.username,
-                    photoURL: userData.photoURL
-                  };
-                }
-              } catch (error) {
-                console.error(`Error fetching user ${userId}:`, error);
-              }
-              return {
-                userId,
-                displayName: userId,
-                username: userId,
-                photoURL: undefined
-              };
-            });
-
-            const userDetails = await Promise.all(userPromises);
-            const userMap = new Map(userDetails.map(user => [user.userId, user]));
-
-            // Convert to ranking entries and sort
-            filteredRankings = Object.values(playerStats)
-              .filter(stats => stats.gamesPlayed > 0)
-              .map(stats => {
-                const userDetail = userMap.get(stats.userId);
-                return {
-                  userId: stats.userId,
-                  displayName: userDetail?.displayName || stats.userId,
-                  username: userDetail?.username || stats.userId,
-                  photoURL: userDetail?.photoURL,
-                  gamesPlayed: stats.gamesPlayed,
-                  gamesWon: stats.gamesWon,
-                  totalPoints: stats.totalPoints,
-                  winRate: stats.gamesPlayed > 0 ? (stats.gamesWon / stats.gamesPlayed) * 100 : 0,
-                  rank: 0 // Will be set after sorting
-                } as RankingEntry;
-              })
-              .sort((a, b) => {
-                // Sort by total points first, then by win rate, then by games won
-                if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
-                if (b.winRate !== a.winRate) return b.winRate - a.winRate;
-                return b.gamesWon - a.gamesWon;
-              })
-              .map((player, index) => ({
-                ...player,
-                rank: index + 1
-              }));
-          } else {
-            // Season not found, use all time
-            filteredRankings = await getRankingsByTimePeriod("all");
-          }
-        } else {
-          // No season selected, use time frame
-          const rankingData = await getRankingsByTimePeriod(timeFrame);
-          filteredRankings = rankingData;
-        }
-
-        // Further filter by game mode if specified and not already filtered by season
-        if (filter.gameMode !== "all" && !filter.seasonId) {
-          // Filter games by mode
-          const db = getFirestore();
-
-          // Get game data for filtering by mode
-          const gamesQuery = query(
-            collection(db, "games"),
-            where("status", "==", "completed"),
-            where("settings.gameMode", "==", filter.gameMode),
-          );
-
-          const gamesSnapshot = await getDocs(gamesQuery);
-          const gamesByMode = new Set<string>();
-
-          gamesSnapshot.forEach((doc) => {
-            const game = doc.data() as { createdBy: string; opponent: string };
-            gamesByMode.add(game.createdBy);
-            gamesByMode.add(game.opponent);
-          });
-
-          // Only include players who have played games in this mode
-          filteredRankings = filteredRankings.filter((player) =>
-            gamesByMode.has(player.userId),
-          );
-        }
-      }
-
-      setRankings(filteredRankings);
-    } catch (err) {
-      console.error("Error fetching rankings:", err);
-      setError("Failed to load rankings data");
+      const leaguesData = await getAllLeaguesWithRankings();
+      setLeagues(leaguesData);
+    } catch (error) {
+      console.error("Error fetching leagues with rankings:", error);
+      setError("Failed to load leagues and rankings data");
     } finally {
       setLoading(false);
     }
-  }, [filter, seasons]); // Add seasons dependency to re-fetch when seasons load
+  }, []);
 
   useEffect(() => {
-    fetchRankings();
-  }, [fetchRankings]);
+    fetchLeaguesWithRankings();
+  }, [fetchLeaguesWithRankings]);
 
-  useEffect(() => {
-    // Fetch available leagues
-    const fetchLeagues = async () => {
-      try {
-        const db = getFirestore();
-        const leaguesQuery = query(
-          collection(db, "leagues"),
-          where("status", "in", ["active", "completed"]),
-        );
-
-        const leaguesSnap = await getDocs(leaguesQuery);
-        const leaguesList: { id: string; name: string }[] = [];
-
-        leaguesSnap.forEach((doc) => {
-          leaguesList.push({
-            id: doc.id,
-            name: doc.data().name,
-          });
-        });
-
-        setLeagues(leaguesList);
-      } catch (err) {
-        console.error("Error fetching leagues:", err);
+  // Handle player click
+  const handlePlayerClick = useCallback(async (player: RankingEntry) => {
+    try {
+      // Get the complete user profile to include all stats (winStreak, maxWinStreak, etc.)
+      const fullUserProfile = await getUserProfile(player.userId);
+      
+      if (fullUserProfile) {
+        setSelectedPlayer(fullUserProfile);
+      } else {
+        // Fallback to converted profile if getUserProfile fails
+        const userProfile = convertRankingEntryToUserProfile(player);
+        setSelectedPlayer(userProfile);
       }
-    };
+      
+      setIsProfileDialogOpen(true);
+    } catch (error) {
+      console.error("Error fetching user profile:", error);
+      // Fallback to converted profile on error
+      const userProfile = convertRankingEntryToUserProfile(player);
+      setSelectedPlayer(userProfile);
+      setIsProfileDialogOpen(true);
+    }
+  }, []);
 
-    const fetchSeasons = async () => {
-      try {
-        // Load seasons based on current league filter
-        const seasonsList = await getAllSeasons(filter.leagueId || undefined);
-        setSeasons(seasonsList);
-        
-        // Only auto-select season if there are seasons and user hasn't manually selected one
-        // Don't auto-select to allow viewing all-time rankings by default
-      } catch (err) {
-        console.error("Error fetching seasons:", err);
-      }
-    };
-
-    fetchLeagues();
-    fetchSeasons();
-  }, [filter.leagueId]); // Re-fetch seasons when league changes
-
-  const handleFilterChange = (
-    filterKey: keyof RankingFilter,
-    value: string | null | "all" | "month" | "week" | "individual" | "teams",
-  ) => {
-    setFilter((prev) => ({
-      ...prev,
-      [filterKey]: value,
-    }));
-
-    // Reset to first page and refresh data when filters change
-    setLoading(true);
-  };
-
-  const openPlayerDetails = (player: RankingEntry) => {
-    setSelectedPlayer(player);
-  };
-
-  const closePlayerDetails = () => {
+  // Handle dialog close
+  const handleDialogClose = useCallback(() => {
+    setIsProfileDialogOpen(false);
     setSelectedPlayer(null);
-  };
+  }, []);
 
-  // Find the current user in the rankings (only if logged in)
-  const currentUserRanking = auth.currentUser 
-    ? rankings.find((player) => player.userId === auth.currentUser?.uid)
-    : null;
+  if (loading) {
+    return <LoadingState />;
+  }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto dark:text-white">
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h1 className="text-3xl font-bold">Player Rankings</h1>
-          {filter.leagueId && (
-            <div className="text-lg text-gray-600 dark:text-gray-400 mt-1">
-              {leagues.find((league) => league.id === filter.leagueId)?.name || "League Rankings"} - Liga Específica
-            </div>
-          )}
-          {!filter.leagueId && (
-            <div className="text-lg text-gray-600 dark:text-gray-400 mt-1">
-              Rankings Globales
-            </div>
-          )}
-        </div>
+    <div className="p-2 sm:p-4 lg:p-6 w-full lg:max-w-6xl lg:mx-auto">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-6 space-y-4 sm:space-y-0">
+        <h1 className="text-xl sm:text-2xl font-bold">League Rankings</h1>
         <button
-          onClick={fetchRankings}
+          onClick={fetchLeaguesWithRankings}
           className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
         >
           Refresh Rankings
         </button>
       </div>
 
-      {/* Filters */}
-      <div className="bg-white dark:bg-zinc-800 rounded-lg shadow mb-6">
-        <div className="px-6 py-4 border-b border-gray-200 dark:border-zinc-700">
-          <h2 className="text-lg font-semibold">Filters</h2>
-        </div>
-        <div className="px-6 pt-6 pb-2 flex flex-wrap gap-2">
-          {filter.leagueId && (
-            <span className="bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200 text-sm px-3 py-1 rounded-full flex items-center">
-              League:{" "}
-              {leagues.find((league) => league.id === filter.leagueId)?.name}
-              <button
-                onClick={() => handleFilterChange("leagueId", null)}
-                className="ml-2 text-blue-700 dark:text-blue-300 hover:text-blue-900 dark:hover:text-blue-100"
-              >
-                ×
-              </button>
-            </span>
-          )}
-          {filter.seasonId && (
-            <span className="bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-200 text-sm px-3 py-1 rounded-full flex items-center">
-              Season:{" "}
-              {seasons.find((season) => season.id === filter.seasonId)?.name}
-              <button
-                onClick={() => handleFilterChange("seasonId", null)}
-                className="ml-2 text-orange-700 dark:text-orange-300 hover:text-orange-900 dark:hover:text-orange-100"
-              >
-                ×
-              </button>
-            </span>
-          )}
-          {filter.timeFrame !== "all" && !filter.seasonId && (
-            <span className="bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200 text-sm px-3 py-1 rounded-full flex items-center">
-              Time: {filter.timeFrame === "week" ? "Past Week" : "Past Month"}
-              <button
-                onClick={() => handleFilterChange("timeFrame", "all")}
-                className="ml-2 text-green-700 dark:text-green-300 hover:text-green-900 dark:hover:text-green-100"
-              >
-                ×
-              </button>
-            </span>
-          )}
-          {filter.gameMode !== "all" && (
-            <span className="bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200 text-sm px-3 py-1 rounded-full flex items-center">
-              Mode: {filter.gameMode === "teams" ? "Teams" : "Individual"}
-              <button
-                onClick={() => handleFilterChange("gameMode", "all")}
-                className="ml-2 text-purple-700 dark:text-purple-300 hover:text-purple-900 dark:hover:text-purple-100"
-              >
-                ×
-              </button>
-            </span>
-          )}
-        </div>
-        <div className="p-6 grid grid-cols-1 md:grid-cols-4 gap-4">
-          {/* League Filter */}
-          <CustomSelect
-            id="league-filter"
-            name="league"
-            label="League"
-            value={filter.leagueId || "global"}
-            onChange={(value) =>
-              handleFilterChange(
-                "leagueId",
-                value === "global" ? null : value,
-              )
-            }
-            options={[
-              { value: "global", label: "Global Ranking" },
-              ...leagues.map((league) => ({
-                value: league.id,
-                label: league.name,
-              })),
-            ]}
-            highlighted={!!filter.leagueId}
-          />
-
-          {/* Season Filter */}
-          <CustomSelect
-            id="season-filter"
-            name="season"
-            label="Season"
-            value={filter.seasonId || "all"}
-            onChange={(value) =>
-              handleFilterChange(
-                "seasonId",
-                value === "all" ? null : value,
-              )
-            }
-            options={[
-              { value: "all", label: "All Seasons" },
-              ...seasons.map((season) => ({
-                value: season.id,
-                label: `${season.name}${season.status === "active" ? " (Active)" : ""}`,
-              })),
-            ]}
-            highlighted={!!filter.seasonId}
-          />
-
-          {/* Time Frame Filter */}
-          <CustomSelect
-            id="timeframe-filter"
-            name="timeframe"
-            label={`Time Frame${filter.seasonId ? " (Disabled)" : ""}`}
-            value={filter.timeFrame}
-            onChange={(value) => handleFilterChange("timeFrame", value)}
-            disabled={!!filter.seasonId}
-            options={[
-              { value: "all", label: "All Time" },
-              { value: "month", label: "Last Month" },
-              { value: "week", label: "Last Week" },
-            ]}
-            highlighted={filter.timeFrame !== "all" && !filter.seasonId}
-          />
-
-          {/* Game Mode Filter */}
-          <CustomSelect
-            id="gamemode-filter"
-            name="gamemode"
-            label="Game Mode"
-            value={filter.gameMode}
-            onChange={(value) => handleFilterChange("gameMode", value)}
-            options={[
-              { value: "all", label: "All Modes" },
-              { value: "teams", label: "Teams Mode" },
-              { value: "individual", label: "Individual Mode" },
-            ]}
-            highlighted={filter.gameMode !== "all"}
-          />
-        </div>
-      </div>
-
-      {/* Active Filters Summary */}
-      {(filter.leagueId !== null ||
-        filter.timeFrame !== "all" ||
-        filter.gameMode !== "all" ||
-        filter.seasonId !== null) && (
-        <div className="bg-gray-50 dark:bg-zinc-800/50 border border-gray-200 dark:border-zinc-700 rounded-lg p-4 mb-6">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Current View</h2>
-            <button
-              onClick={() => {
-                setFilter({
-                  leagueId: null,
-                  timeFrame: "all",
-                  gameMode: "all",
-                  seasonId: null,
-                });
-              }}
-              className="text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"
-            >
-              Clear All Filters
-            </button>
-          </div>
-
-          <div className="mt-2 text-gray-700 dark:text-gray-300">
-            {filter.seasonId && (
-              <span className="font-medium">
-                Season: {seasons.find((season) => season.id === filter.seasonId)?.name || "Selected Season"}
-              </span>
-            )}
-            {filter.timeFrame !== "all" && !filter.seasonId && (
-              <span className="font-medium">
-                {filter.seasonId ? " • " : ""}
-                {filter.timeFrame === "week" ? "Past Week" : "Past Month"}
-              </span>
-            )}
-            {filter.gameMode !== "all" && (
-              <span>
-                {(filter.timeFrame !== "all" && !filter.seasonId) || filter.seasonId ? " • " : ""}
-                <span className="font-medium">
-                  {filter.gameMode === "teams"
-                    ? "Teams Mode"
-                    : "Individual Mode"}
-                </span>
-              </span>
-            )}
-            {filter.leagueId && (
-              <span>
-                {((filter.timeFrame !== "all" && !filter.seasonId) || filter.gameMode !== "all" || filter.seasonId)
-                  ? " • "
-                  : ""}
-                <span className="font-medium">
-                  {leagues.find((league) => league.id === filter.leagueId)
-                    ?.name || "League"}
-                </span>
-              </span>
-            )}
-          </div>
+      {error && (
+        <div className="mb-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded-md flex justify-between items-center">
+          <div>{error}</div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setError(null)}
+            className="ml-4 text-red-700 hover:text-red-800"
+          >
+            Dismiss
+          </Button>
         </div>
       )}
 
-      {/* Current User's Ranking - Only show if user is logged in */}
-      {auth.currentUser && currentUserRanking && (
-        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900 rounded-lg p-4 mb-6">
-          <h2 className="text-lg font-semibold mb-2">
-            {filter.leagueId 
-              ? `Tu Ranking en ${leagues.find((league) => league.id === filter.leagueId)?.name || "Liga"}`
-              : "Your Global Ranking"
-            }
-          </h2>
-          <div className="flex items-center">
-            <div className="flex-shrink-0 mr-4">
-              <div className="bg-blue-600 text-white w-10 h-10 rounded-full flex items-center justify-center font-bold">
-                {currentUserRanking.rank}
-              </div>
-            </div>
-            <div className="flex-grow grid grid-cols-1 md:grid-cols-5 gap-2">
-              <div>
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Player
-                </p>
-                <p className="font-medium">{currentUserRanking.displayName}</p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Title
-                </p>
-                <p className="font-medium">
-                  {calculateTitle(currentUserRanking.gamesWon)}
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Games Won
-                </p>
-                <p className="font-medium">
-                  {currentUserRanking.gamesWon}/{currentUserRanking.gamesPlayed}
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Win Rate
-                </p>
-                <p className="font-medium">
-                  {currentUserRanking.winRate.toFixed(1)}%
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  {filter.leagueId ? "Puntos Liga" : "Total Points"}
-                </p>
-                <p className="font-medium">{currentUserRanking.totalPoints}</p>
-              </div>
-            </div>
-          </div>
+      {/* Leagues with Rankings */}
+      {leagues.length === 0 ? (
+        <NoDataState />
+      ) : (
+        <div className="space-y-8">
+          {leagues.map((league) => (
+            <LeagueRankingsTable
+              key={league.id}
+              league={league}
+              onPlayerClick={handlePlayerClick}
+            />
+          ))}
         </div>
       )}
 
-      {/* Rankings Table */}
-      <div className="bg-white dark:bg-zinc-800 rounded-lg shadow overflow-hidden">
-        {loading ? (
-          <div className="p-8 text-center">
-            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mx-auto"></div>
-            <p className="mt-4 text-gray-500">Loading rankings...</p>
-          </div>
-        ) : error ? (
-          <div className="p-8 text-center text-red-500">{error}</div>
-        ) : rankings.length === 0 ? (
-          <div className="p-8 text-center text-gray-500">
-            {filter.leagueId
-              ? `No players found in ${leagues.find((league) => league.id === filter.leagueId)?.name || "this league"}.`
-              : filter.gameMode !== "all"
-                ? `No players have played games in ${filter.gameMode} mode.`
-                : "No ranking data available"}
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200 dark:divide-zinc-700">
-              <thead className="bg-gray-50 dark:bg-zinc-700">
-                {/* Table filter label */}
-                {(filter.leagueId !== null ||
-                  filter.timeFrame !== "all" ||
-                  filter.gameMode !== "all") && (
-                  <tr>
-                    <th
-                      colSpan={6}
-                      className="px-6 py-2 text-sm text-gray-600 dark:text-gray-400"
-                    >
-                      Showing rankings for:
-                      {filter.timeFrame !== "all" && (
-                        <span className="ml-1 font-medium">
-                          {filter.timeFrame === "week"
-                            ? "Past Week"
-                            : "Past Month"}
-                        </span>
-                      )}
-                      {filter.gameMode !== "all" && (
-                        <span>
-                          {filter.timeFrame !== "all" ? " • " : " "}
-                          <span className="font-medium">
-                            {filter.gameMode === "teams"
-                              ? "Teams Mode"
-                              : "Individual Mode"}
-                          </span>
-                        </span>
-                      )}
-                      {filter.leagueId && (
-                        <span>
-                          {filter.timeFrame !== "all" ||
-                          filter.gameMode !== "all"
-                            ? " • "
-                            : " "}
-                          <span className="font-medium">
-                            {leagues.find(
-                              (league) => league.id === filter.leagueId,
-                            )?.name || "League"}
-                          </span>
-                        </span>
-                      )}
-                    </th>
-                  </tr>
-                )}
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-zinc-300 uppercase tracking-wider">
-                    Rank
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-zinc-300 uppercase tracking-wider">
-                    Player
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-zinc-300 uppercase tracking-wider">
-                    Title
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-zinc-300 uppercase tracking-wider">
-                    Games Won
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-zinc-300 uppercase tracking-wider">
-                    Win Rate
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-zinc-300 uppercase tracking-wider">
-                    {filter.leagueId ? "Puntos Liga" : "Total Points"}
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white dark:bg-zinc-800 divide-y divide-gray-200 dark:divide-zinc-700">
-                {rankings.map((player) => (
-                  <tr
-                    key={player.userId}
-                    className={`hover:bg-gray-50 dark:hover:bg-zinc-700 cursor-pointer ${
-                      auth.currentUser && player.userId === auth.currentUser?.uid
-                        ? "bg-blue-50 dark:bg-blue-900/10"
-                        : ""
-                    }`}
-                    onClick={() => openPlayerDetails(player)}
-                  >
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div
-                        className={`flex items-center justify-center w-8 h-8 rounded-full ${
-                          player.rank <= 3
-                            ? "bg-yellow-400 text-white"
-                            : "bg-gray-200 dark:bg-zinc-700 text-gray-800 dark:text-white"
-                        }`}
-                      >
-                        {player.rank}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center">
-                        {player.photoURL ? (
-                          <img
-                            src={player.photoURL}
-                            alt={player.displayName}
-                            className="w-10 h-10 rounded-full mr-3"
-                          />
-                        ) : (
-                          <div className="w-10 h-10 rounded-full bg-blue-500 text-white flex items-center justify-center mr-3">
-                            {player.displayName.charAt(0).toUpperCase()}
-                          </div>
-                        )}
-                        <div>
-                          <div className="font-medium">
-                            {player.displayName}
-                          </div>
-                          {player.username &&
-                            player.username !== player.displayName && (
-                              <div className="text-sm text-gray-500">
-                                @{player.username}
-                              </div>
-                            )}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span
-                        className={`px-2 py-1 text-xs rounded-full ${
-                          player.gamesWon >= 25
-                            ? "bg-purple-100 text-purple-800 dark:bg-purple-900/20 dark:text-purple-200"
-                            : player.gamesWon >= 15
-                              ? "bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-200"
-                              : player.gamesWon >= 8
-                                ? "bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-200"
-                                : "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300"
-                        }`}
-                      >
-                        {calculateTitle(player.gamesWon)}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {player.gamesWon}/{player.gamesPlayed}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {player.winRate.toFixed(1)}%
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {player.totalPoints}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Player Details Modal (for future expansion) */}
-      {selectedPlayer && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-zinc-800 rounded-lg shadow-lg w-full max-w-lg p-6 mx-4">
-            <div className="flex justify-between items-start mb-4">
-              <h2 className="text-2xl font-bold">
-                {selectedPlayer.displayName}
-              </h2>
-              <button
-                onClick={closePlayerDetails}
-                className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
-              </button>
-            </div>
-
-            <div className="flex items-center mb-6">
-              {selectedPlayer.photoURL ? (
-                <img
-                  src={selectedPlayer.photoURL}
-                  alt={selectedPlayer.displayName}
-                  className="w-16 h-16 rounded-full mr-4"
-                />
-              ) : (
-                <div className="w-16 h-16 rounded-full bg-blue-500 text-white flex items-center justify-center mr-4">
-                  {selectedPlayer.displayName.charAt(0).toUpperCase()}
-                </div>
-              )}
-              <div>
-                <p className="text-xl font-bold">
-                  {selectedPlayer.displayName}
-                </p>
-                {selectedPlayer.username &&
-                  selectedPlayer.username !== selectedPlayer.displayName && (
-                    <p className="text-gray-500">@{selectedPlayer.username}</p>
-                  )}
-                <p className="mt-1 text-sm">
-                  <span
-                    className={`px-2 py-1 text-xs rounded-full ${
-                      selectedPlayer.gamesWon >= 25
-                        ? "bg-purple-100 text-purple-800 dark:bg-purple-900/20 dark:text-purple-200"
-                        : selectedPlayer.gamesWon >= 15
-                          ? "bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-200"
-                          : selectedPlayer.gamesWon >= 8
-                            ? "bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-200"
-                            : "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300"
-                    }`}
-                  >
-                    {calculateTitle(selectedPlayer.gamesWon)}
-                  </span>
-                </p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4 mb-6">
-              <div className="bg-gray-100 dark:bg-zinc-700 p-4 rounded-lg">
-                <p className="text-sm text-gray-500 dark:text-gray-400">Rank</p>
-                <p className="text-2xl font-bold">{selectedPlayer.rank}</p>
-              </div>
-              <div className="bg-gray-100 dark:bg-zinc-700 p-4 rounded-lg">
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Win Rate
-                </p>
-                <p className="text-2xl font-bold">
-                  {selectedPlayer.winRate.toFixed(1)}%
-                </p>
-              </div>
-              <div className="bg-gray-100 dark:bg-zinc-700 p-4 rounded-lg">
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Games Played
-                </p>
-                <p className="text-2xl font-bold">
-                  {selectedPlayer.gamesPlayed}
-                </p>
-              </div>
-              <div className="bg-gray-100 dark:bg-zinc-700 p-4 rounded-lg">
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Games Won
-                </p>
-                <p className="text-2xl font-bold">{selectedPlayer.gamesWon}</p>
-              </div>
-            </div>
-
-            <div className="bg-gray-100 dark:bg-zinc-700 p-4 rounded-lg mb-6">
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                {filter.leagueId ? "Puntos Liga" : "Total Points"}
-              </p>
-              <p className="text-2xl font-bold">{selectedPlayer.totalPoints}</p>
-            </div>
-
-            {/* Future: Add match history, leagues, etc. */}
-            <p className="text-gray-500 text-sm">
-              {filter.leagueId 
-                ? `League-specific statistics for ${leagues.find((league) => league.id === filter.leagueId)?.name || "this league"}.`
-                : auth.currentUser 
-                  ? "League support and detailed player statistics coming soon."
-                  : "Sign in to view detailed statistics and join leagues."
-              }
-            </p>
-          </div>
-        </div>
-      )}
+      {/* User Profile Dialog */}
+      <UserProfileDialog
+        user={selectedPlayer}
+        isOpen={isProfileDialogOpen}
+        onClose={handleDialogClose}
+        stats={selectedPlayer ? {
+          gamesPlayed: selectedPlayer.stats.gamesPlayed,
+          gamesWon: selectedPlayer.stats.gamesWon,
+          totalPoints: selectedPlayer.stats.totalPoints,
+          rank: selectedPlayer.stats.globalRank,
+          winRate: selectedPlayer.stats.gamesPlayed > 0 
+            ? (selectedPlayer.stats.gamesWon / selectedPlayer.stats.gamesPlayed) * 100 
+            : 0
+        } : undefined}
+      />
     </div>
   );
 };
 
-export default Rankings;
+// Memoize the entire component for better performance
+const MemoizedRankings = memo(Rankings);
+
+export default MemoizedRankings;

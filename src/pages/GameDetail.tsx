@@ -8,11 +8,14 @@ import {
   confirmGameResult, 
   acceptGameInvitation,
   rejectGameInvitation,
-  startGame
+  startGame,
+  getLeagueById,
+  getUserLeaguesWithRanking
 } from "../firebase";
 import { useGameModeInfo, usePointsInfo, useRulesetInfo } from "../hooks/useGameConfig";
 import { getFirestore, doc, onSnapshot } from "firebase/firestore";
 import type { Game, UserProfile } from "../firebase";
+import UserProfileDialog from "../components/UserProfileDialog";
 import {
   Card,
   CardContent,
@@ -110,6 +113,13 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
   const [opponentScore, setOpponentScore] = useState<number>(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [rejectionReason, setRejectionReason] = useState<string>("");
+  
+  // Profile dialog state
+  const [selectedUser, setSelectedUser] = useState<UserProfile | null>(null);
+  const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false);
+  
+  // League information
+  const [leagueInfo, setLeagueInfo] = useState<{id: string, name: string} | null>(null);
 
   // Check if current user is part of this game
   const isParticipant = useCallback(() => {
@@ -201,6 +211,17 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
         // Get opponent profile
         const opponentProfile = await getUserProfile(gameData.opponent);
         setOpponent(opponentProfile);
+
+        // Get league information if this is a league game
+        if (gameData.leagueId) {
+          try {
+            const league = await getLeagueById(gameData.leagueId);
+            setLeagueInfo(league);
+          } catch (err) {
+            console.error("Error loading league info:", err);
+            // Don't fail the whole load if league info fails
+          }
+        }
 
         // Initialize score inputs if scores exist
         if (gameData.scores) {
@@ -440,6 +461,17 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
     return { isValid, canSubmit, maxScore };
   }, [game, creatorScore, opponentScore]);
 
+  // Profile dialog handlers
+  const handleUserClick = useCallback((user: UserProfile) => {
+    setSelectedUser(user);
+    setIsProfileDialogOpen(true);
+  }, []);
+
+  const handleCloseProfileDialog = useCallback(() => {
+    setIsProfileDialogOpen(false);
+    setSelectedUser(null);
+  }, []);
+
   // Memoized loading component
   const LoadingComponent = useMemo(() => (
     <div className="p-6 max-w-6xl mx-auto text-zinc-900 dark:text-white">
@@ -522,48 +554,100 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
           <GameModeDisplay gameMode={game.settings.gameMode} />
           <PointsDisplay points={game.settings.pointsToWin} />
           <RulesetDisplay useBoricuaRules={game.settings.useBoricuaRules || false} />
+          
+          {/* Game Date */}
+          <div className="p-3 bg-gray-50 dark:bg-zinc-700 rounded-md">
+            <p className="text-sm text-gray-500 dark:text-zinc-400">Created</p>
+            <p className="font-medium">
+              {game.createdAt ? new Date(game.createdAt.toDate()).toLocaleString() : "Unknown"}
+            </p>
+          </div>
+          
+          {/* League Information */}
+          {leagueInfo && (
+            <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900 rounded-md">
+              <div className="flex items-center">
+                <div className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center mr-3">
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M6 6V5a3 3 0 013-3h2a3 3 0 013 3v1h2a2 2 0 012 2v3.57A22.952 22.952 0 0110 13a22.95 22.95 0 01-8-1.43V8a2 2 0 012-2h2zm2-1a1 1 0 011-1h2a1 1 0 011 1v1H8V5zm1 5a1 1 0 011-1h.01a1 1 0 110 2H10a1 1 0 01-1-1z" clipRule="evenodd" />
+                    <path d="M2 13.692V16a2 2 0 002 2h12a2 2 0 002-2v-2.308A24.974 24.974 0 0110 15c-2.796 0-5.487-.46-8-1.308z" />
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-sm text-blue-600 dark:text-blue-400">League Game</p>
+                  <p className="font-medium text-blue-800 dark:text-blue-200">{leagueInfo.name}</p>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Participants */}
         <div className="mb-6">
           <h2 className="text-lg font-semibold mb-3">Participants</h2>
           <div className="flex flex-col sm:flex-row gap-4">
-            <div className="flex-1 p-3 border border-gray-200 dark:border-zinc-700 rounded-md">
+            <div 
+              className="flex-1 p-3 border border-gray-200 dark:border-zinc-700 rounded-md hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+              onClick={() => creator && handleUserClick(creator)}
+            >
               <div className="flex items-center">
                 {creator?.photoURL ? (
                   <img 
                     src={creator.photoURL} 
                     alt={creator.displayName} 
-                    className="w-10 h-10 rounded-full mr-3"
+                    className="w-12 h-12 rounded-full mr-3"
                   />
                 ) : (
-                  <div className="w-10 h-10 rounded-full bg-blue-500 text-white flex items-center justify-center mr-3">
+                  <div className="w-12 h-12 rounded-full bg-blue-500 text-white flex items-center justify-center mr-3">
                     {creator?.displayName.charAt(0).toUpperCase() || "?"}
                   </div>
                 )}
-                <div>
+                <div className="flex-1">
                   <p className="font-medium">{creator?.displayName || "Unknown"}</p>
                   <p className="text-sm text-gray-500 dark:text-zinc-400">Creator</p>
+                  {creator?.stats && (
+                    <div className="flex space-x-4 mt-1">
+                      <span className="text-xs text-green-600 dark:text-green-400">
+                        {creator.stats.gamesWon} wins
+                      </span>
+                      <span className="text-xs text-blue-600 dark:text-blue-400">
+                        {creator.stats.gamesPlayed} games
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
             
-            <div className="flex-1 p-3 border border-gray-200 dark:border-zinc-700 rounded-md">
+            <div 
+              className="flex-1 p-3 border border-gray-200 dark:border-zinc-700 rounded-md hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+              onClick={() => opponent && handleUserClick(opponent)}
+            >
               <div className="flex items-center">
                 {opponent?.photoURL ? (
                   <img 
                     src={opponent.photoURL} 
                     alt={opponent.displayName} 
-                    className="w-10 h-10 rounded-full mr-3"
+                    className="w-12 h-12 rounded-full mr-3"
                   />
                 ) : (
-                  <div className="w-10 h-10 rounded-full bg-blue-500 text-white flex items-center justify-center mr-3">
+                  <div className="w-12 h-12 rounded-full bg-blue-500 text-white flex items-center justify-center mr-3">
                     {opponent?.displayName.charAt(0).toUpperCase() || "?"}
                   </div>
                 )}
-                <div>
+                <div className="flex-1">
                   <p className="font-medium">{opponent?.displayName || "Unknown"}</p>
                   <p className="text-sm text-gray-500 dark:text-zinc-400">Opponent</p>
+                  {opponent?.stats && (
+                    <div className="flex space-x-4 mt-1">
+                      <span className="text-xs text-green-600 dark:text-green-400">
+                        {opponent.stats.gamesWon} wins
+                      </span>
+                      <span className="text-xs text-blue-600 dark:text-blue-400">
+                        {opponent.stats.gamesPlayed} games
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -850,6 +934,22 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
         )}
         </CardContent>
       </Card>
+
+      {/* User Profile Dialog */}
+      <UserProfileDialog
+        user={selectedUser}
+        isOpen={isProfileDialogOpen}
+        onClose={handleCloseProfileDialog}
+        stats={selectedUser ? {
+          gamesPlayed: selectedUser.stats.gamesPlayed,
+          gamesWon: selectedUser.stats.gamesWon,
+          totalPoints: selectedUser.stats.totalPoints,
+          rank: selectedUser.stats.globalRank,
+          winRate: selectedUser.stats.gamesPlayed > 0 
+            ? (selectedUser.stats.gamesWon / selectedUser.stats.gamesPlayed) * 100 
+            : 0
+        } : undefined}
+      />
     </div>
   );
 };
