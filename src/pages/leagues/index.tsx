@@ -65,13 +65,19 @@ const LeagueCard = memo<{
       };
     }
     
-    return {
-      text: "Join",
-      className: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200 hover:bg-green-200 dark:hover:bg-green-900/50",
-      isLink: true,
-      href: `/leagues/join/${league.id}`
-    };
-  }, [userIsJudge, isMyLeague, league.id, league.createdBy]);
+    // Check if join requests are allowed for this league
+    if (league.settings?.allowJoinRequests !== false) {
+      return {
+        text: "Join",
+        className: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200 hover:bg-green-200 dark:hover:bg-green-900/50",
+        isLink: true,
+        href: `/leagues/join/${league.id}`
+      };
+    }
+    
+    // If join requests are not allowed, don't show join option
+    return null;
+  }, [userIsJudge, isMyLeague, league.id, league.createdBy, league.settings?.allowJoinRequests]);
 
   return (
     <div className="bg-white dark:bg-zinc-800 rounded-lg shadow-sm border border-gray-200 dark:border-zinc-700 overflow-hidden hover:shadow-md transition-all duration-200 hover:border-blue-300 dark:hover:border-blue-600">
@@ -104,6 +110,13 @@ const LeagueCard = memo<{
               <div className="flex items-center space-x-2 mt-1">
                 <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusConfig.bg} ${statusConfig.text}`}>
                   {statusConfig.label}
+                </span>
+                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                  league.isPublic 
+                    ? "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200" 
+                    : "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-200"
+                }`}>
+                  {league.isPublic ? "Public" : "Private"}
                 </span>
                 <span className="text-xs text-gray-500 dark:text-gray-400">
                   {league.stats?.totalMembers || 0} members
@@ -142,19 +155,21 @@ const LeagueCard = memo<{
             View Details
           </Link>
 
-          {membershipStatus.isLink ? (
-            <Link
-              to={membershipStatus.href!}
-              className={`px-3 py-2 text-sm font-medium rounded-md transition-colors ${membershipStatus.className}`}
-              onClick={handleClick}
-            >
-              {membershipStatus.text}
-            </Link>
-          ) : (
-            <span className={`px-3 py-2 text-sm font-medium rounded-md ${membershipStatus.className}`}>
-              {membershipStatus.text}
-            </span>
-          )}
+          {membershipStatus ? (
+            membershipStatus.isLink ? (
+              <Link
+                to={membershipStatus.href!}
+                className={`px-3 py-2 text-sm font-medium rounded-md transition-colors ${membershipStatus.className}`}
+                onClick={handleClick}
+              >
+                {membershipStatus.text}
+              </Link>
+            ) : (
+              <span className={`px-3 py-2 text-sm font-medium rounded-md ${membershipStatus.className}`}>
+                {membershipStatus.text}
+              </span>
+            )
+          ) : null}
         </div>
       </div>
     </div>
@@ -322,10 +337,21 @@ const LeaguesPage: React.FC = () => {
       const results = await Promise.all(promises);
       const [querySnapshot, membershipSnapshot] = results;
 
-      // Process leagues data
+      // Process leagues data with public/private filtering
       const leaguesData: League[] = [];
       querySnapshot.forEach((doc: any) => {
-        leaguesData.push({ id: doc.id, ...doc.data() } as League);
+        const leagueData = { id: doc.id, ...doc.data() } as League;
+        
+        // Show league if:
+        // 1. It's public, OR
+        // 2. User is the creator, OR
+        // 3. User is a judge (can see all leagues), OR
+        // 4. User is a member (will be filtered later in myLeagues)
+        if (leagueData.isPublic || 
+            (auth.currentUser && leagueData.createdBy === auth.currentUser.uid) ||
+            userIsJudge) {
+          leaguesData.push(leagueData);
+        }
       });
 
       // Process "My Leagues" - include both created leagues and memberships

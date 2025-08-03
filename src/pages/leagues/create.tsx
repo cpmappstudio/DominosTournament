@@ -10,7 +10,7 @@ import {
   doc,
 } from "firebase/firestore";
 import { auth } from "../../firebase";
-import { uploadLeagueImage } from "../../firebase";
+import { uploadLeagueImage, getAllSeasons, createSeason } from "../../firebase";
 import { isJudge } from "../../utils/auth";
 import { ExclamationCircleIcon, TrophyIcon, CalendarIcon } from "@heroicons/react/24/solid";
 import {
@@ -24,7 +24,7 @@ import { Label } from "../../components/ui/label";
 import { Calendar } from "../../components/ui/calendar";
 import LeagueImageUploader from "../../components/LeagueImageUploader";
 import { useGameConfig } from "../../config/gameConfig";
-import type { GameMode, TournamentFormat } from "../../models/league";
+import type { GameMode, TournamentFormat, Season } from "../../models/league";
 const CreateLeague: React.FC = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
@@ -53,7 +53,8 @@ const CreateLeague: React.FC = () => {
     usePointDifferential: true,
     ruleset: "standard", // Add ruleset selection
     // Season configuration
-    createSeason: true,
+    selectedSeason: "", // ID de temporada global seleccionada
+    createSeason: false, // Cambiar default a false
     seasonName: "",
     resetRankings: true,
     carryOverStats: false,
@@ -64,6 +65,10 @@ const CreateLeague: React.FC = () => {
   const [seasonEndDate, setSeasonEndDate] = useState<Date | undefined>();
   const [showStartCalendar, setShowStartCalendar] = useState(false);
   const [showEndCalendar, setShowEndCalendar] = useState(false);
+
+  // Global seasons state
+  const [globalSeasons, setGlobalSeasons] = useState<Season[]>([]);
+  const [loadingSeasons, setLoadingSeasons] = useState(false);
 
   // League image state
   const [leagueImage, setLeagueImage] = useState<File | null>(null);
@@ -87,6 +92,24 @@ const CreateLeague: React.FC = () => {
       }));
     }
   }, [gameConfig]);
+
+  // Load global seasons
+  useEffect(() => {
+    const loadGlobalSeasons = async () => {
+      setLoadingSeasons(true);
+      try {
+        // Get global seasons (leagueId = null means global)
+        const seasons = await getAllSeasons(); // Sin leagueId para obtener temporadas globales
+        setGlobalSeasons(seasons);
+      } catch (error) {
+        console.error("Error loading global seasons:", error);
+      } finally {
+        setLoadingSeasons(false);
+      }
+    };
+
+    loadGlobalSeasons();
+  }, []);
 
   // Optimized calendar click outside handler
   useEffect(() => {
@@ -138,6 +161,8 @@ const CreateLeague: React.FC = () => {
           errors.push("Season start date cannot be in the past");
         }
       }
+    } else if (formData.selectedSeason && !globalSeasons.find(s => s.id === formData.selectedSeason)) {
+      errors.push("Selected season is not valid");
     }
 
     // Playoff teams validation
@@ -298,21 +323,23 @@ const CreateLeague: React.FC = () => {
 
       batch.set(leagueRef, leagueData);
 
-      // Create season document if requested
+      // Handle season association/creation
+      let seasonId: string | null = null;
+      
       if (formData.createSeason && seasonStartDate && seasonEndDate) {
-        const seasonRef = doc(collection(db, "seasons"));
+        // Create new global season
         const seasonData = {
           name: formData.seasonName.trim(),
-          description: `Season for ${formData.name}`,
+          description: `Global season: ${formData.seasonName.trim()}`,
           startDate: Timestamp.fromDate(seasonStartDate),
           endDate: Timestamp.fromDate(seasonEndDate),
           status: seasonStartDate > new Date() ? "upcoming" : "active",
-          isDefault: true,
+          isDefault: false, // No auto-default for new seasons
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
-          leagueId: leagueId,
+          leagueId: null, // Global season
           
-          // Season settings with proper structure
+          // Season settings
           settings: {
             resetRankings: Boolean(formData.resetRankings),
             carryOverStats: Boolean(formData.carryOverStats),
@@ -326,7 +353,25 @@ const CreateLeague: React.FC = () => {
           },
         };
         
+        // Create the season first to get its ID
+        const seasonRef = doc(collection(db, "seasons"));
+        seasonId = seasonRef.id;
         batch.set(seasonRef, seasonData);
+      } else if (formData.selectedSeason) {
+        // Use existing global season
+        seasonId = formData.selectedSeason;
+      }
+
+      // Create league-season association if we have a season
+      if (seasonId) {
+        const leagueSeasonRef = doc(collection(db, "leagueSeasons"));
+        const leagueSeasonData = {
+          leagueId: leagueId,
+          seasonId: seasonId,
+          joinedAt: serverTimestamp(),
+          status: "active"
+        };
+        batch.set(leagueSeasonRef, leagueSeasonData);
       }
 
       // Add creator as league member (if not a judge)
@@ -479,8 +524,8 @@ const CreateLeague: React.FC = () => {
                 </Label>
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   {formData.isPublic 
-                    ? "Anyone can see this league and request to join" 
-                    : "Only invited users can see and join this league"}
+                    ? "Public: This league will appear in the leagues list and anyone can request to join" 
+                    : "Private: This league will only be visible to members, the creator, and administrators. Access is by invitation only."}
                 </p>
               </div>
             </div>
@@ -496,18 +541,74 @@ const CreateLeague: React.FC = () => {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-md">
+              <p className="text-sm text-blue-700 dark:text-blue-300">
+                <strong>About Seasons:</strong> Seasons are global and can be used across multiple leagues. 
+                You can either select an existing season or create a new global season.
+              </p>
+            </div>
+
+            {/* Select Existing Season */}
+            <div>
+              <Label htmlFor="selectedSeason" className="text-sm font-medium mb-2 block">
+                Select Existing Season
+              </Label>
+              <select
+                id="selectedSeason"
+                name="selectedSeason"
+                value={formData.selectedSeason}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setFormData(prev => ({ 
+                    ...prev, 
+                    selectedSeason: value,
+                    createSeason: false // Deselect create when selecting existing
+                  }));
+                }}
+                disabled={loadingSeasons || formData.createSeason}
+                className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-700 dark:border-zinc-600 disabled:bg-gray-100 disabled:cursor-not-allowed dark:disabled:bg-zinc-800"
+              >
+                <option value="">-- Select a season (optional) --</option>
+                {globalSeasons.map((season) => (
+                  <option key={season.id} value={season.id}>
+                    {season.name} ({season.status}) - {new Date(season.startDate.toDate()).toLocaleDateString()} to {new Date(season.endDate.toDate()).toLocaleDateString()}
+                  </option>
+                ))}
+              </select>
+              {loadingSeasons && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Loading seasons...</p>
+              )}
+              {!loadingSeasons && globalSeasons.length === 0 && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">No global seasons found. Create one below.</p>
+              )}
+            </div>
+
+            {/* OR Divider */}
+            <div className="relative flex items-center justify-center my-6">
+              <div className="border-t border-gray-300 dark:border-zinc-600 w-full"></div>
+              <span className="bg-white dark:bg-zinc-800 px-3 text-sm text-gray-500 dark:text-gray-400">OR</span>
+              <div className="border-t border-gray-300 dark:border-zinc-600 w-full"></div>
+            </div>
+
+            {/* Create New Season */}
             <div className="flex items-start gap-3">
               <Checkbox 
                 id="createSeason" 
                 checked={formData.createSeason}
-                onCheckedChange={(checked) => setFormData(prev => ({ ...prev, createSeason: !!checked }))}
+                disabled={!!formData.selectedSeason}
+                onCheckedChange={(checked) => setFormData(prev => ({ 
+                  ...prev, 
+                  createSeason: !!checked,
+                  selectedSeason: checked ? "" : prev.selectedSeason // Clear selection when creating
+                }))}
+                className="disabled:opacity-50 disabled:cursor-not-allowed"
               />
               <div className="grid gap-1.5 font-normal">
                 <Label htmlFor="createSeason" className="text-sm font-medium">
-                  Create a season for this league
+                  Create a new global season
                 </Label>
                 <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Seasons help organize play into distinct periods with start/end dates and ranking resets
+                  Create a new global season that can be used by multiple leagues
                 </p>
               </div>
             </div>

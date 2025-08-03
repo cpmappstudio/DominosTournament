@@ -12,6 +12,7 @@ import {
 } from "firebase/firestore";
 import { auth, getUserProfile, UserProfile } from "../../firebase";
 import { canManageLeague, isJudge } from "../../utils/auth";
+import { useGameConfig } from "../../config/gameConfig";
 import {
   TrophyIcon,
   UserGroupIcon,
@@ -67,6 +68,9 @@ const LeagueDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
+  
+  // Game configuration hook
+  const { config: gameConfig, loading: configLoading } = useGameConfig();
   const [error, setError] = useState<string | null>(null);
   const [league, setLeague] = useState<League | null>(null);
   const [userMembership, setUserMembership] = useState<LeagueMember | null>(
@@ -354,6 +358,19 @@ const LeagueDetail: React.FC = () => {
           id: leagueSnap.id,
           ...leagueSnap.data(),
         } as League;
+        
+        // Check if user has access to this league
+        if (!leagueData.isPublic && auth.currentUser) {
+          const isCreator = leagueData.createdBy === auth.currentUser.uid;
+          const isJudgeUser = isJudge(auth.currentUser);
+          
+          // If it's a private league and user is not creator or judge, check membership
+          if (!isCreator && !isJudgeUser) {
+            // We'll verify membership in the membership listener
+            // For now, set the league data and let membership check handle access
+          }
+        }
+        
         setLeague(leagueData);
         setLoading(false);
       },
@@ -382,6 +399,18 @@ const LeagueDetail: React.FC = () => {
           setUserMembership(membershipData);
         } else {
           setUserMembership(null);
+          
+          // If this is a private league and user is not a member, creator, or judge, deny access
+          if (league && !league.isPublic && auth.currentUser) {
+            const isCreator = league.createdBy === auth.currentUser.uid;
+            const isJudgeUser = isJudge(auth.currentUser);
+            
+            if (!isCreator && !isJudgeUser) {
+              setError("Access denied. This is a private league and you are not a member.");
+              setLoading(false);
+              return;
+            }
+          }
         }
       });
     }
@@ -618,6 +647,14 @@ const LeagueDetail: React.FC = () => {
     }
   }, [openProfileModal, userProfiles, userProfileCache]);
 
+  // Helper function to get game mode display name
+  const getGameModeDisplayName = useCallback((gameMode: string) => {
+    if (!gameConfig) return gameMode;
+    
+    const mode = gameConfig.gameModes.find(m => m.value === gameMode);
+    return mode ? mode.label : gameMode;
+  }, [gameConfig]);
+
   // Define standings type
   type StandingEntry = {
     userId: string;
@@ -716,7 +753,7 @@ const LeagueDetail: React.FC = () => {
         );
       },
     },
-  ], []);
+  ], [userProfiles]);
 
   // Standings table columns (similar to rankings)
   const standingsColumns = useMemo<ColumnDef<StandingEntry>[]>(() => [
@@ -1034,7 +1071,7 @@ const LeagueDetail: React.FC = () => {
             <div className="flex items-center">
               <ChartBarIcon className="h-5 w-5 mr-1" />
               <span>
-                {league.settings?.gameMode === "double" ? "Team" : "Individual"}{" "}
+                {getGameModeDisplayName(league.settings?.gameMode || "single")}{" "}
                 mode • {league.settings?.pointsToWin || 100} points
               </span>
             </div>
@@ -1052,7 +1089,8 @@ const LeagueDetail: React.FC = () => {
 
             {!userMembership &&
               league.status &&
-              league.status !== "completed" && (
+              league.status !== "completed" &&
+              league.settings?.allowJoinRequests !== false && (
                 <Link
                   to={`/leagues/join/${id}`}
                   className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-center sm:text-left"
@@ -1101,9 +1139,7 @@ const LeagueDetail: React.FC = () => {
                 <ul className="space-y-2 text-gray-700 dark:text-gray-300 text-sm">
                   <li>
                     <strong>Game Mode:</strong>{" "}
-                    {league.settings?.gameMode === "double"
-                      ? "Teams (2 vs 2)"
-                      : "Individual"}
+                    {getGameModeDisplayName(league.settings?.gameMode || "single")}
                   </li>
                   <li>
                     <strong>Points to Win:</strong>{" "}

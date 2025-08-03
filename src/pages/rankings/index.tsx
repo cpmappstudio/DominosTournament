@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useCallback, useMemo, memo } from "react";
+import { Link } from "react-router-dom";
 import {
   getAllLeaguesWithRankings,
   calculateTitle,
   RankingEntry as RankingEntryType,
   UserProfile,
   getUserProfile,
+  getAllSeasons,
 } from "../../firebase";
 import { Timestamp } from "firebase/firestore";
+import { Season } from "../../models/league";
 import {
   Card,
   CardContent,
@@ -36,6 +39,13 @@ import {
   TableHeader,
   TableRow,
 } from "../../components/ui/table";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../../components/ui/dropdown-menu";
+import { ChevronDownIcon } from "@heroicons/react/24/solid";
 import UserProfileModal, { useUserProfileModal } from "../../components/UserProfileModal";
 
 // Use the RankingEntry type from firebase.ts
@@ -69,6 +79,10 @@ interface LeagueWithRankings {
   name: string;
   description?: string;
   photoURL?: string;
+  createdAt: Timestamp;
+  status: string;
+  currentSeason?: string;
+  seasonIds?: string[]; // Array of associated season IDs
   rankings: RankingEntry[];
 }
 
@@ -162,10 +176,20 @@ const LoadingState = memo(() => (
 ));
 
 // Memoized No Data State
-const NoDataState = memo(() => (
+const NoDataState = memo<{ isFiltered?: boolean }>(({ isFiltered = false }) => (
   <Card>
     <CardContent className="text-center pt-6">
-      <p className="mb-4">No leagues or ranking data available.</p>
+      <p className="mb-4">
+        {isFiltered 
+          ? "No leagues match the selected filters." 
+          : "No leagues or ranking data available."
+        }
+      </p>
+      {isFiltered && (
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          Try adjusting your filters to see more results.
+        </p>
+      )}
     </CardContent>
   </Card>
 ));
@@ -237,7 +261,12 @@ const LeagueRankingsTable: React.FC<{
                 </AvatarFallback>
               </Avatar>
             )}
-            <span>{league.name}</span>
+            <Link 
+              to={`/leagues/${league.id}`}
+              className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+            >
+              {league.name}
+            </Link>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -261,7 +290,12 @@ const LeagueRankingsTable: React.FC<{
               </AvatarFallback>
             </Avatar>
           )}
-          <span>{league.name}</span>
+          <Link 
+            to={`/leagues/${league.id}`}
+            className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+          >
+            {league.name}
+          </Link>
         </CardTitle>
         {league.description && (
           <p className="text-sm text-zinc-600 dark:text-zinc-400 mt-1">
@@ -360,6 +394,17 @@ const Rankings: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
+  // Global seasons state
+  const [globalSeasons, setGlobalSeasons] = useState<Season[]>([]);
+  const [seasonsLoading, setSeasonsLoading] = useState(false);
+  
+  // Filter states
+  const [filters, setFilters] = useState({
+    league: "all", // "all" or specific league ID
+    year: "all", // "all" or specific year
+    season: "all" // "all" or specific season ID
+  });
+  
   // Use the user profile modal hook
   const { isOpen: isProfileModalOpen, selectedUser, openModal: openProfileModal, closeModal: closeProfileModal } = useUserProfileModal();
 
@@ -378,9 +423,24 @@ const Rankings: React.FC = () => {
     }
   }, []);
 
+  // Load global seasons
+  const fetchGlobalSeasons = useCallback(async () => {
+    setSeasonsLoading(true);
+    try {
+      // Get global seasons (without leagueId)
+      const seasons = await getAllSeasons();
+      setGlobalSeasons(seasons);
+    } catch (error) {
+      console.error("Error fetching global seasons:", error);
+    } finally {
+      setSeasonsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchLeaguesWithRankings();
-  }, [fetchLeaguesWithRankings]);
+    fetchGlobalSeasons();
+  }, [fetchLeaguesWithRankings, fetchGlobalSeasons]);
 
   // Handle player click - simplified with new modal hook
   const handlePlayerClick = useCallback(async (player: RankingEntry) => {
@@ -403,6 +463,87 @@ const Rankings: React.FC = () => {
     }
   }, [openProfileModal]);
 
+  // Memoized filter options
+  const filterOptions = useMemo(() => {
+    const years = new Set<number>();
+    
+    leagues.forEach(league => {
+      // Extract year from createdAt timestamp
+      if (league.createdAt && league.createdAt.toDate) {
+        try {
+          const year = league.createdAt.toDate().getFullYear();
+          years.add(year);
+        } catch (error) {
+          console.warn('Error parsing createdAt date for league:', league.id, error);
+        }
+      }
+    });
+
+    return {
+      leagues: [
+        { id: "all", name: "All Leagues" },
+        ...leagues.map(league => ({ id: league.id, name: league.name }))
+      ],
+      years: [
+        { value: "all", label: "All Years" },
+        ...Array.from(years).sort((a, b) => b - a).map(year => ({ 
+          value: year.toString(), 
+          label: year.toString() 
+        }))
+      ],
+      seasons: [
+        { value: "all", label: "All Seasons" },
+        ...globalSeasons.map(season => ({ 
+          value: season.id, 
+          label: season.name 
+        }))
+      ]
+    };
+  }, [leagues, globalSeasons]);
+
+  // Filtered leagues based on current filters
+  const filteredLeagues = useMemo(() => {
+    return leagues.filter(league => {
+      // League filter
+      if (filters.league !== "all" && league.id !== filters.league) {
+        return false;
+      }
+      
+      // Year filter - check the year from createdAt timestamp
+      if (filters.year !== "all") {
+        if (!league.createdAt || !league.createdAt.toDate) {
+          return false; // Exclude leagues without valid createdAt
+        }
+        try {
+          const leagueYear = league.createdAt.toDate().getFullYear();
+          if (leagueYear.toString() !== filters.year) {
+            return false;
+          }
+        } catch (error) {
+          console.warn('Error parsing date for league:', league.id, error);
+          return false; // Exclude leagues with invalid dates
+        }
+      }
+      
+      // Season filter - check if league is associated with the selected season
+      if (filters.season !== "all") {
+        if (!league.seasonIds || !league.seasonIds.includes(filters.season)) {
+          return false;
+        }
+      }
+      
+      return true;
+    });
+  }, [leagues, filters]);
+
+  // Filter change handlers
+  const handleFilterChange = useCallback((filterType: keyof typeof filters, value: string) => {
+    setFilters(prev => ({
+      ...prev,
+      [filterType]: value
+    }));
+  }, []);
+
   if (loading) {
     return <LoadingState />;
   }
@@ -410,14 +551,132 @@ const Rankings: React.FC = () => {
   return (
     <div className="p-2 sm:p-4 lg:p-6 w-full lg:max-w-6xl lg:mx-auto">
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-6 space-y-4 sm:space-y-0">
-        <h1 className="text-xl sm:text-2xl font-bold">League Rankings</h1>
-        <button
-          onClick={fetchLeaguesWithRankings}
-          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-        >
-          Refresh Rankings
-        </button>
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold">League Rankings</h1>
+          {(filters.league !== "all" || filters.year !== "all" || filters.season !== "all") && (
+            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+              Showing {filteredLeagues.length} of {leagues.length} league{leagues.length !== 1 ? 's' : ''}
+              {filters.season !== "all" && (
+                <span> • Filtered by season: {filterOptions.seasons.find(s => s.value === filters.season)?.label}</span>
+              )}
+            </p>
+          )}
+        </div>
       </div>
+
+      {/* Filter controls */}
+      <Card className="mb-6">
+        <CardContent className="">
+          <div className="flex flex-col md:flex-row gap-4">
+            {/* League Filter */}
+            <div className="flex flex-col space-y-2">
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                League
+              </label>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button 
+                    variant="outline" 
+                    className="w-full md:w-48 justify-between"
+                  >
+                    {filterOptions.leagues.find(l => l.id === filters.league)?.name || "All Leagues"}
+                    <ChevronDownIcon className="ml-2 h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent className="w-48">
+                  {filterOptions.leagues.map((league) => (
+                    <DropdownMenuItem
+                      key={league.id}
+                      onClick={() => handleFilterChange("league", league.id)}
+                    >
+                      {league.name}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+
+            {/* Year Filter */}
+            <div className="flex flex-col space-y-2">
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                Year
+              </label>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button 
+                    variant="outline" 
+                    className="w-full md:w-32 justify-between"
+                  >
+                    {filterOptions.years.find(y => y.value === filters.year)?.label || "All Years"}
+                    <ChevronDownIcon className="ml-2 h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent className="w-32">
+                  {filterOptions.years.map((year) => (
+                    <DropdownMenuItem
+                      key={year.value}
+                      onClick={() => handleFilterChange("year", year.value)}
+                    >
+                      {year.label}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+
+            {/* Season Filter */}
+            <div className="flex flex-col space-y-2">
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                Season
+                {seasonsLoading && (
+                  <span className="ml-2 text-xs text-gray-500">(Loading...)</span>
+                )}
+              </label>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button 
+                    variant="outline" 
+                    className="w-full md:w-40 justify-between"
+                    disabled={seasonsLoading}
+                  >
+                    {filterOptions.seasons.find(s => s.value === filters.season)?.label || "All Seasons"}
+                    <ChevronDownIcon className="ml-2 h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent className="w-40">
+                  {filterOptions.seasons.length === 1 ? (
+                    <DropdownMenuItem disabled>
+                      No seasons available
+                    </DropdownMenuItem>
+                  ) : (
+                    filterOptions.seasons.map((season) => (
+                      <DropdownMenuItem
+                        key={season.value}
+                        onClick={() => handleFilterChange("season", season.value)}
+                      >
+                        {season.label}
+                      </DropdownMenuItem>
+                    ))
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+
+            {/* Clear Filters Button */}
+            {(filters.league !== "all" || filters.year !== "all" || filters.season !== "all") && (
+              <div className="flex flex-col justify-end">
+                <Button
+                  variant="outline"
+                  onClick={() => setFilters({ league: "all", year: "all", season: "all" })}
+                  className="text-gray-600 dark:text-gray-400"
+                >
+                  Clear Filters
+                </Button>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       {error && (
         <div className="mb-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded-md flex justify-between items-center">
@@ -434,11 +693,11 @@ const Rankings: React.FC = () => {
       )}
 
       {/* Leagues with Rankings */}
-      {leagues.length === 0 ? (
-        <NoDataState />
+      {filteredLeagues.length === 0 ? (
+        <NoDataState isFiltered={filters.league !== "all" || filters.year !== "all" || filters.season !== "all"} />
       ) : (
         <div className="space-y-8">
-          {leagues.map((league) => (
+          {filteredLeagues.map((league) => (
             <LeagueRankingsTable
               key={league.id}
               league={league}

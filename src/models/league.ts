@@ -248,3 +248,12 @@ export interface LeagueGame {
   };
   winner?: string;
 }
+
+// League-Season Association
+export interface LeagueSeason {
+  id: string;
+  leagueId: string;
+  seasonId: string;
+  joinedAt: Timestamp;
+  status: "active" | "completed" | "archived";
+}

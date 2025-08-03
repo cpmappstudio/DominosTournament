@@ -994,6 +994,10 @@ export const getAllLeaguesWithRankings = async (): Promise<{
   name: string;
   description?: string;
   photoURL?: string;
+  createdAt: Timestamp;
+  status: string;
+  currentSeason?: string;
+  seasonIds?: string[]; // Array of associated season IDs
   rankings: RankingEntry[];
 }[]> => {
   try {
@@ -1014,11 +1018,29 @@ export const getAllLeaguesWithRankings = async (): Promise<{
       // Get league rankings
       const rankings = await getLeagueRankings(leagueDoc.id);
       
+      // Get associated seasons for this league
+      let seasonIds: string[] = [];
+      try {
+        const leagueSeasonsQuery = query(
+          collection(db, "leagueSeasons"),
+          where("leagueId", "==", leagueDoc.id),
+          where("status", "==", "active")
+        );
+        const leagueSeasonsSnap = await getDocs(leagueSeasonsQuery);
+        seasonIds = leagueSeasonsSnap.docs.map(doc => doc.data().seasonId);
+      } catch (error) {
+        console.warn('Error fetching seasons for league:', leagueDoc.id, error);
+      }
+      
       leagues.push({
         id: leagueDoc.id,
         name: leagueData.name,
         description: leagueData.description,
         photoURL: leagueData.photoURL,
+        createdAt: leagueData.createdAt,
+        status: leagueData.status,
+        currentSeason: leagueData.currentSeason || "2024", // Default to current year if not set
+        seasonIds: seasonIds, // Array of associated season IDs
         rankings
       });
     }
@@ -1035,21 +1057,29 @@ export const getLeagueRankings = async (leagueId: string): Promise<RankingEntry[
   try {
     const db = getFirestore();
     
-    // Get all members of the league first
-    const memberQuery = query(
+    // Get all members of the league (active and inactive for stats calculation)
+    const allMemberQuery = query(
       collection(db, "leagueMemberships"),
       where("leagueId", "==", leagueId),
-      where("status", "==", "active"),
+      where("status", "in", ["active", "inactive"]), // Include both active and inactive for stats
       limit(DEFAULT_QUERY_LIMIT)
     );
 
-    const memberSnap = await getDocs(memberQuery);
-    const leagueUserIds: string[] = [];
-    memberSnap.forEach((doc) => {
-      leagueUserIds.push(doc.data().userId);
+    const allMemberSnap = await getDocs(allMemberQuery);
+    const allLeagueUserIds: string[] = [];
+    const activeMemberIds: string[] = [];
+    
+    allMemberSnap.forEach((doc) => {
+      const memberData = doc.data();
+      allLeagueUserIds.push(memberData.userId);
+      
+      // Keep track of active members for final ranking display
+      if (memberData.status === "active") {
+        activeMemberIds.push(memberData.userId);
+      }
     });
 
-    if (leagueUserIds.length === 0) {
+    if (allLeagueUserIds.length === 0) {
       return [];
     }
 
@@ -1063,7 +1093,7 @@ export const getLeagueRankings = async (leagueId: string): Promise<RankingEntry[
 
     const gamesSnapshot = await getDocs(gamesQuery);
     
-    // Calculate league-specific statistics
+    // Calculate league-specific statistics for ALL members (active and inactive)
     const playerStats: Record<string, {
       gamesPlayed: number;
       gamesWon: number;
@@ -1071,8 +1101,8 @@ export const getLeagueRankings = async (leagueId: string): Promise<RankingEntry[
       userId: string;
     }> = {};
 
-    // Initialize stats for all league members
-    leagueUserIds.forEach(userId => {
+    // Initialize stats for all league members (including inactive ones for calculations)
+    allLeagueUserIds.forEach(userId => {
       playerStats[userId] = {
         gamesPlayed: 0,
         gamesWon: 0,
@@ -1081,7 +1111,7 @@ export const getLeagueRankings = async (leagueId: string): Promise<RankingEntry[
       };
     });
 
-    // Process games to calculate stats
+    // Process games to calculate stats (including games with inactive players)
     gamesSnapshot.forEach((doc) => {
       const game = doc.data() as {
         createdBy: string;
@@ -1090,8 +1120,8 @@ export const getLeagueRankings = async (leagueId: string): Promise<RankingEntry[
         scores?: { creator: number; opponent: number };
       };
 
-      // Only count if both players are league members
-      if (leagueUserIds.includes(game.createdBy) && leagueUserIds.includes(game.opponent)) {
+      // Count games if both players were league members (even if inactive now)
+      if (allLeagueUserIds.includes(game.createdBy) && allLeagueUserIds.includes(game.opponent)) {
         // Update games played
         playerStats[game.createdBy].gamesPlayed++;
         playerStats[game.opponent].gamesPlayed++;
@@ -1113,8 +1143,8 @@ export const getLeagueRankings = async (leagueId: string): Promise<RankingEntry[
       }
     });
 
-    // Get user display names
-    const userPromises = leagueUserIds.map(async (userId) => {
+    // Get user display names for ALL members (needed for stats calculation)
+    const userPromises = allLeagueUserIds.map(async (userId) => {
       try {
         const userDoc = await getDocs(query(
           collection(db, "users"),
@@ -1144,9 +1174,9 @@ export const getLeagueRankings = async (leagueId: string): Promise<RankingEntry[
     const userDetails = await Promise.all(userPromises);
     const userMap = new Map(userDetails.map(user => [user.userId, user]));
 
-    // Convert to ranking entries and sort
+    // Convert to ranking entries and sort (only show ACTIVE members in rankings)
     const rankings = Object.values(playerStats)
-      .filter(stats => stats.gamesPlayed > 0 || leagueUserIds.includes(stats.userId)) // Include all league members
+      .filter(stats => activeMemberIds.includes(stats.userId)) // Only show active members in rankings
       .map(stats => {
         const userDetail = userMap.get(stats.userId);
         const winRate = stats.gamesPlayed > 0 ? (stats.gamesWon / stats.gamesPlayed) * 100 : 0;
@@ -1492,6 +1522,42 @@ export const updateSeasonStats = async (seasonId: string, stats: Partial<Season[
   } catch (error) {
     console.error("Error updating season stats:", error);
     throw error;
+  }
+};
+
+// Get seasons associated with a specific league
+export const getLeagueSeasons = async (leagueId: string): Promise<Season[]> => {
+  try {
+    // Get league-season associations
+    const leagueSeasonsQuery = query(
+      collection(db, "leagueSeasons"),
+      where("leagueId", "==", leagueId)
+    );
+    
+    const leagueSeasonsSnap = await getDocs(leagueSeasonsQuery);
+    const seasonIds = leagueSeasonsSnap.docs.map(doc => doc.data().seasonId);
+    
+    if (seasonIds.length === 0) {
+      return [];
+    }
+    
+    // Get the actual season documents
+    const seasonsPromises = seasonIds.map(async (seasonId) => {
+      const seasonDoc = await getDoc(doc(db, "seasons", seasonId));
+      if (seasonDoc.exists()) {
+        return {
+          id: seasonDoc.id,
+          ...seasonDoc.data()
+        } as Season;
+      }
+      return null;
+    });
+    
+    const seasons = await Promise.all(seasonsPromises);
+    return seasons.filter(season => season !== null) as Season[];
+  } catch (error) {
+    console.error("Error getting league seasons:", error);
+    return [];
   }
 };
 
