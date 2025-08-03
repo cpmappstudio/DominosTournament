@@ -3,7 +3,23 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { getGameConfig, GameConfigurationSchema } from '../config/gameConfig';
+import { 
+  getGameConfig, 
+  GameConfigurationSchema,
+  getDefaultGameMode,
+  getDefaultPoints,
+  getDefaultRuleset,
+  getDefaultStartingPlayer,
+  getDefaultTimeLimit,
+  getDefaultNumberOfPlayers,
+  validateGameMode,
+  validatePoints,
+  validateRuleset,
+  validateStartingPlayer,
+  validateTimeLimit,
+  validateNumberOfPlayers,
+  getValidNumberOfPlayersForGameMode
+} from '../config/gameConfig';
 import { getGamePreferences, GamePreferences } from '../utils/gamePreferences';
 
 /**
@@ -14,6 +30,9 @@ export const useGameDefaults = () => {
     gameMode: string;
     points: number;
     ruleset: string;
+    startingPlayer: string;
+    timeLimit: number;
+    numberOfPlayers: number;
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -28,7 +47,10 @@ export const useGameDefaults = () => {
       setDefaults({
         gameMode: preferences.defaultGameMode,
         points: preferences.defaultPointsToWin,
-        ruleset: preferences.defaultRuleset
+        ruleset: preferences.defaultRuleset,
+        startingPlayer: await getDefaultStartingPlayer(),
+        timeLimit: await getDefaultTimeLimit(),
+        numberOfPlayers: await getDefaultNumberOfPlayers()
       });
     } catch (err) {
       console.error('Error loading game defaults:', err);
@@ -53,6 +75,9 @@ export const useGameOptions = () => {
     gameModes: Array<{ value: string; label: string; description?: string }>;
     pointsOptions: Array<{ value: number; label: string; description?: string }>;
     rulesets: Array<{ value: string; label: string; description?: string }>;
+    startingPlayerOptions: Array<{ value: string; label: string; description?: string }>;
+    timeLimitOptions: Array<{ value: number; label: string; description?: string }>;
+    numberOfPlayersOptions: Array<{ value: number; label: string; description?: string; requiredGameModes?: string[] }>;
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -68,7 +93,10 @@ export const useGameOptions = () => {
         setOptions({
           gameModes: config.gameModes.filter(mode => !mode.deprecated),
           pointsOptions: config.pointsOptions.filter(option => !option.deprecated),
-          rulesets: config.rulesets.filter(ruleset => !ruleset.deprecated)
+          rulesets: config.rulesets.filter(ruleset => !ruleset.deprecated),
+          startingPlayerOptions: config.startingPlayerOptions.filter(option => !option.deprecated),
+          timeLimitOptions: config.timeLimitOptions.filter(option => !option.deprecated),
+          numberOfPlayersOptions: config.numberOfPlayersOptions.filter(option => !option.deprecated)
         });
       } catch (err) {
         console.error('Error loading game options:', err);
@@ -92,6 +120,9 @@ export const useGameValidation = () => {
     gameMode?: string;
     points?: number;
     ruleset?: string;
+    startingPlayer?: string;
+    timeLimit?: number;
+    numberOfPlayers?: number;
   }) => {
     try {
       const config = await getGameConfig();
@@ -105,18 +136,47 @@ export const useGameValidation = () => {
           : true,
         ruleset: params.ruleset
           ? config.rulesets.some(ruleset => ruleset.value === params.ruleset && !ruleset.deprecated)
+          : true,
+        startingPlayer: params.startingPlayer
+          ? config.startingPlayerOptions.some(option => option.value === params.startingPlayer && !option.deprecated)
+          : true,
+        timeLimit: params.timeLimit !== undefined
+          ? config.timeLimitOptions.some(option => option.value === params.timeLimit && !option.deprecated)
+          : true,
+        numberOfPlayers: params.numberOfPlayers
+          ? config.numberOfPlayersOptions.some(option => option.value === params.numberOfPlayers && !option.deprecated)
           : true
       };
 
+      // Additional validation: check if numberOfPlayers is compatible with gameMode
+      let gameModeCompatibility = true;
+      if (params.gameMode && params.numberOfPlayers) {
+        const validPlayers = await getValidNumberOfPlayersForGameMode(params.gameMode);
+        gameModeCompatibility = validPlayers.includes(params.numberOfPlayers);
+      }
+
       return {
-        isValid: validation.gameMode && validation.points && validation.ruleset,
-        validation
+        isValid: validation.gameMode && validation.points && validation.ruleset && 
+                validation.startingPlayer && validation.timeLimit && validation.numberOfPlayers &&
+                gameModeCompatibility,
+        validation: {
+          ...validation,
+          gameModeCompatibility
+        }
       };
     } catch (error) {
       console.error('Error validating game parameters:', error);
       return {
         isValid: false,
-        validation: { gameMode: false, points: false, ruleset: false }
+        validation: { 
+          gameMode: false, 
+          points: false, 
+          ruleset: false,
+          startingPlayer: false,
+          timeLimit: false,
+          numberOfPlayers: false,
+          gameModeCompatibility: false
+        }
       };
     }
   }, []);
@@ -257,4 +317,119 @@ export const useRulesetInfo = (ruleset: string) => {
   }, [ruleset]);
 
   return info;
+};
+
+/**
+ * Hook for components that need to display starting player information
+ */
+export const useStartingPlayerInfo = (startingPlayer: string) => {
+  const [info, setInfo] = useState<{
+    label: string;
+    description?: string;
+    isValid: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    const loadInfo = async () => {
+      try {
+        const config = await getGameConfig();
+        const option = config.startingPlayerOptions.find(o => o.value === startingPlayer);
+        
+        if (option) {
+          setInfo({
+            label: option.label,
+            description: option.description,
+            isValid: !option.deprecated
+          });
+        } else {
+          setInfo({
+            label: startingPlayer,
+            isValid: false
+          });
+        }
+      } catch (error) {
+        console.error('Error loading starting player info:', error);
+        setInfo({
+          label: startingPlayer,
+          isValid: false
+        });
+      }
+    };
+
+    if (startingPlayer) {
+      loadInfo();
+    }
+  }, [startingPlayer]);
+
+  return info;
+};
+
+/**
+ * Hook for components that need to display time limit information
+ */
+export const useTimeLimitInfo = (timeLimit: number) => {
+  const [info, setInfo] = useState<{
+    label: string;
+    description?: string;
+    isValid: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    const loadInfo = async () => {
+      try {
+        const config = await getGameConfig();
+        const option = config.timeLimitOptions.find(o => o.value === timeLimit);
+        
+        if (option) {
+          setInfo({
+            label: option.label,
+            description: option.description,
+            isValid: !option.deprecated
+          });
+        } else {
+          setInfo({
+            label: timeLimit === 0 ? "No limit" : `${timeLimit} minutes`,
+            isValid: false
+          });
+        }
+      } catch (error) {
+        console.error('Error loading time limit info:', error);
+        setInfo({
+          label: timeLimit === 0 ? "No limit" : `${timeLimit} minutes`,
+          isValid: false
+        });
+      }
+    };
+
+    if (typeof timeLimit === 'number') {
+      loadInfo();
+    }
+  }, [timeLimit]);
+
+  return info;
+};
+
+/**
+ * Hook to get valid player options for a specific game mode
+ */
+export const useValidPlayersForGameMode = (gameMode: string) => {
+  const [validPlayers, setValidPlayers] = useState<number[]>([]);
+
+  useEffect(() => {
+    const loadValidPlayers = async () => {
+      try {
+        const players = await getValidNumberOfPlayersForGameMode(gameMode);
+        setValidPlayers(players);
+      } catch (error) {
+        console.error('Error loading valid players for game mode:', error);
+        setValidPlayers([2]); // Fallback
+      }
+    };
+
+    if (gameMode) {
+      loadValidPlayers();
+    }
+  }, [gameMode]);
+
+  return validPlayers;
 };

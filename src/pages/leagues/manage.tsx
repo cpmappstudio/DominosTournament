@@ -26,7 +26,7 @@ import {
   type SortingState,
   type ColumnFiltersState,
 } from "@tanstack/react-table";
-import { auth, uploadLeagueImage, getLeagueSeasons, getCurrentSeason, createSeason, updateSeasonStatus, getAllSeasons } from "../../firebase";
+import { auth, uploadLeagueImage, getLeagueSeasons, getCurrentSeason, createSeason, updateSeasonStatus, getAllSeasons, deleteLeagueCompletely, getUserProfile } from "../../firebase";
 import { isJudge } from "../../utils/auth";
 import { TrophyIcon } from "@heroicons/react/24/solid";
 import type {
@@ -69,7 +69,6 @@ import {
 } from "../../components/ui/avatar";
 import { Input } from "../../components/input";
 import UserProfileModal, { useUserProfileModal } from "../../components/UserProfileModal";
-import { getUserProfile } from "../../firebase";
 
 const LeagueManagement: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -225,16 +224,14 @@ const LeagueManagement: React.FC = () => {
     setError(null);
 
     try {
-      const db = getFirestore();
-
-      // Delete the league document
-      await deleteDoc(firestoreDoc(db, "leagues", id));
+      // Use the comprehensive delete function from Firebase
+      await deleteLeagueCompletely(id);
 
       // Navigate back to leagues list
       navigate("/leagues");
     } catch (err) {
       console.error("Error deleting league:", err);
-      setError("Failed to delete league. Please try again.");
+      setError("Failed to delete league completely. Please try again.");
       setSaving(false);
     }
   };
@@ -1094,20 +1091,34 @@ const LeagueManagement: React.FC = () => {
         isOpen={showDeleteModal}
         onClose={() => setShowDeleteModal(false)}
         onConfirm={handleDeleteLeague}
-        title="Delete League"
+        title="Delete League Completely"
         message={
           <div>
             <p className="mb-2">
-              Are you sure you want to delete the league{" "}
+              Are you sure you want to <strong>permanently delete</strong> the league{" "}
               <strong>{league.name}</strong>?
             </p>
-            <p>
-              This action cannot be undone. All league data, memberships, and
-              associated games will be permanently deleted.
+            <div className="mb-3">
+              <p className="font-medium text-red-600 dark:text-red-400 mb-2">
+                This action cannot be undone and will permanently delete ALL of the following:
+              </p>
+              <ul className="text-sm text-gray-700 dark:text-gray-300 space-y-1 ml-4">
+                <li>• League profile and image from Firebase Storage</li>
+                <li>• All league memberships and member data</li>
+                <li>• All pending join requests</li>
+                <li>• All league-specific games and match history</li>
+                <li>• All league-season associations</li>
+                <li>• All league tournaments and standings</li>
+                <li>• All league teams (if any)</li>
+                <li>• All league invitations</li>
+              </ul>
+            </div>
+            <p className="text-sm font-medium text-orange-600 dark:text-orange-400">
+              Members will not lose their global stats, but all league-specific data will be lost forever.
             </p>
           </div>
         }
-        confirmText="Delete League"
+        confirmText="Delete League Permanently"
         isDestructive={true}
       />
 
@@ -1176,20 +1187,31 @@ const LeagueManagement: React.FC = () => {
 
               <div className="border border-red-300 rounded-md p-6 bg-red-50 dark:bg-red-900/10 dark:border-red-800">
                 <h3 className="text-lg font-medium text-red-800 dark:text-red-400">
-                  Delete League
+                  Delete League Completely
                 </h3>
-                <p className="text-sm text-red-700 dark:text-red-300 mt-1 mb-4">
-                  Once you delete a league, there is no going back. All league
-                  data, memberships, and associated games will be permanently
-                  deleted.
-                </p>
+                <div className="text-sm text-red-700 dark:text-red-300 mt-1 mb-4">
+                  <p className="mb-3">
+                    Once you delete a league, there is <strong>no going back</strong>. This will permanently remove ALL league data from Firebase, including:
+                  </p>
+                  <ul className="ml-4 space-y-1 mb-3">
+                    <li>• League profile and images from Firebase Storage</li>
+                    <li>• All memberships and member data</li>
+                    <li>• All games, matches, and tournament history</li>
+                    <li>• All join requests and invitations</li>
+                    <li>• All season associations</li>
+                    <li>• All teams and standings</li>
+                  </ul>
+                  <p className="font-medium">
+                    This comprehensive deletion will free up Firebase storage space and ensure no orphaned data remains.
+                  </p>
+                </div>
 
                 <button
                   onClick={() => setShowDeleteModal(true)}
                   disabled={saving}
                   className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {saving ? "Deleting..." : "Delete League"}
+                  {saving ? "Deleting Everything..." : "Delete League Permanently"}
                 </button>
               </div>
             </CardContent>

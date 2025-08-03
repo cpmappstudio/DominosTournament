@@ -16,6 +16,7 @@ import { useGameModeInfo, usePointsInfo, useRulesetInfo } from "../hooks/useGame
 import { getFirestore, doc, onSnapshot } from "firebase/firestore";
 import type { Game, UserProfile } from "../firebase";
 import UserProfileModal, { useUserProfileModal } from "../components/UserProfileModal";
+import { Avatar } from "../components/avatar";
 import {
   Card,
   CardContent,
@@ -532,8 +533,8 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
 
   // Memoized loading component
   const LoadingComponent = useMemo(() => (
-    <div className="p-6 max-w-6xl mx-auto text-zinc-900 dark:text-white">
-      <h1 className="text-2xl font-bold mb-6">Game Details</h1>
+    <div className="p-4 sm:p-6 max-w-sm sm:max-w-6xl mx-auto text-zinc-900 dark:text-white">
+      <h1 className="text-xl sm:text-2xl font-bold mb-6">Game Details</h1>
       <Card>
         <CardContent className="flex justify-center p-6">
           <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
@@ -544,8 +545,8 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
 
   // Memoized error component
   const ErrorComponent = useMemo(() => (
-    <div className="p-6 max-w-6xl mx-auto text-zinc-900 dark:text-white">
-      <h1 className="text-2xl font-bold mb-6">Game Details</h1>
+    <div className="p-4 sm:p-6 max-w-sm sm:max-w-6xl mx-auto text-zinc-900 dark:text-white">
+      <h1 className="text-xl sm:text-2xl font-bold mb-6">Game Details</h1>
       <Card>
         <CardContent className="p-6">
           <div className="p-4 bg-red-100 border border-red-400 text-red-700 rounded mb-4">
@@ -570,19 +571,19 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
   }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto text-zinc-900 dark:text-white">
+    <div className="p-4 sm:p-6 max-w-sm sm:max-w-6xl mx-auto text-zinc-900 dark:text-white">
       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold">Game Details</h1>
-        <Link to="/games" className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300">
+        <h1 className="text-xl sm:text-2xl font-bold">Game Details</h1>
+        <Link to="/games" className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-sm sm:text-base">
           Back to Games
         </Link>
       </div>
 
       <Card>
-        <CardContent className="p-6">
+        <CardContent className="p-4 sm:p-6">
         {/* Game Status */}
-        <div className="mb-6">
-          <span className={`inline-block px-3 py-1 rounded-full text-sm font-medium 
+        <div className="mb-4 sm:mb-6">
+          <span className={`inline-block px-2 sm:px-3 py-1 rounded-full text-xs sm:text-sm font-medium 
             ${game.status === "invited" ? "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-100" : ""}
             ${game.status === "accepted" ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100" : ""}
             ${game.status === "rejected" ? "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100" : ""}
@@ -599,7 +600,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
           </span>
           
           {game.status === "in_progress" && game.activePlayer && (
-            <span className="ml-3 text-sm">
+            <span className="ml-2 sm:ml-3 text-xs sm:text-sm block sm:inline mt-2 sm:mt-0">
               Current Turn: {game.activePlayer === game.createdBy 
                 ? creator?.displayName || "Creator" 
                 : opponent?.displayName || "Opponent"}
@@ -626,22 +627,12 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
             <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900 rounded-md">
               <div className="flex items-center">
                 {/* League Avatar */}
-                <div className="w-8 h-8 rounded-full mr-3 flex-shrink-0">
-                  {leagueInfo.photoURL ? (
-                    <img
-                      src={leagueInfo.photoURL}
-                      alt={leagueInfo.name}
-                      className="w-8 h-8 rounded-full object-cover border border-blue-200 dark:border-blue-800"
-                    />
-                  ) : (
-                    <div className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center">
-                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M6 6V5a3 3 0 013-3h2a3 3 0 013 3v1h2a2 2 0 012 2v3.57A22.952 22.952 0 0110 13a22.95 22.95 0 01-8-1.43V8a2 2 0 012-2h2zm2-1a1 1 0 011-1h2a1 1 0 011 1v1H8V5zm1 5a1 1 0 011-1h.01a1 1 0 110 2H10a1 1 0 01-1-1z" clipRule="evenodd" />
-                        <path d="M2 13.692V16a2 2 0 002 2h12a2 2 0 002-2v-2.308A24.974 24.974 0 0110 15c-2.796 0-5.487-.46-8-1.308z" />
-                      </svg>
-                    </div>
-                  )}
-                </div>
+                <Avatar 
+                  src={leagueInfo.photoURL || undefined} 
+                  initials={leagueInfo.name.substring(0, 2).toUpperCase()}
+                  alt={`${leagueInfo.name} league`}
+                  className="h-12 w-12 mr-3 flex-shrink-0"
+                />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm text-blue-600 dark:text-blue-400">League Game</p>
                   <p className="font-medium text-blue-800 dark:text-blue-200 truncate">{leagueInfo.name}</p>
@@ -659,8 +650,8 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
         </div>
 
         {/* Participants */}
-        <div className="mb-6">
-          <h2 className="text-lg font-semibold mb-3">Participants</h2>
+        <div className="mb-4 sm:mb-6">
+          <h2 className="text-base sm:text-lg font-semibold mb-3">Participants</h2>
           <div className="flex flex-col sm:flex-row gap-4">
             <div 
               className="flex-1 p-3 border border-gray-200 dark:border-zinc-700 rounded-md hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
@@ -752,7 +743,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
                 />
               </div>
               
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                 <button
                   onClick={handleRejectInvitation}
                   disabled={isSubmitting}
@@ -852,7 +843,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
                   <p className="mt-2 text-sm">Enter scores for both players. At least one player must reach {game.settings.pointsToWin} points.</p>
                 </div>
                 
-                <div className="grid grid-cols-2 gap-4 mb-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 mb-4">
                   <div>
                     <label className="block text-sm font-medium mb-1">
                       {creator?.displayName || "Creator"}
@@ -918,7 +909,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
                 </div>
               </div>
               <p className="mb-3">Are these scores correct?</p>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                 <button
                   onClick={() => handleConfirmation(true)}
                   disabled={isSubmitting}

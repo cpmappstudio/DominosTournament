@@ -312,7 +312,7 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
     }
   }, []);
 
-  // Function to refresh games list - memoized with useCallback
+  // Function to refresh games list - simplified and faster
   const refreshGames = useCallback(async () => {
     if (!auth.currentUser) {
       navigate("/");
@@ -322,64 +322,55 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
     try {
       setGameState(prev => ({ ...prev, isRefreshing: true }));
 
-      // First get all games
-      const userGames = await getUserGames();
+      // Get all games in parallel with user profile check
+      const [userGames, activeGameStatus] = await Promise.all([
+        getUserGames(),
+        isPlayerInActiveGame(auth.currentUser.uid)
+      ]);
+
       setGameState(prev => ({ ...prev, games: userGames }));
+      setIsInActiveGame(activeGameStatus);
 
-      // Then check if user is in an active game
-      if (auth.currentUser) {
-        const activeGameStatus = await isPlayerInActiveGame(
-          auth.currentUser.uid,
-        );
-        setIsInActiveGame(activeGameStatus);
-      }
-
-      // Get opponent names for display
+      // Get all unique user IDs for opponent profiles
       const userIds = new Set<string>();
       userGames.forEach((game) => {
         userIds.add(game.createdBy);
         userIds.add(game.opponent);
       });
 
+      // Batch fetch all user profiles
       const db = getFirestore();
       const profilePromises = Array.from(userIds).map(async (uid) => {
         const docRef = doc(db, "users", uid);
         const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          return { uid, profile: docSnap.data() as UserProfile };
-        }
-        return null;
+        return docSnap.exists() ? { uid, profile: docSnap.data() as UserProfile } : null;
       });
 
       const profiles = (await Promise.all(profilePromises)).filter(Boolean) as {
         uid: string;
         profile: UserProfile;
       }[];
+      
       const profilesMap: Record<string, UserProfile> = {};
       profiles.forEach((item) => {
-        if (item) profilesMap[item.uid] = item.profile;
+        profilesMap[item.uid] = item.profile;
       });
-
       setUserProfiles(profilesMap);
 
-      // Get league names for games that belong to leagues
+      // Get league names for games with leagues
       const leagueIds = Array.from(new Set(
         userGames
           .map(game => game.leagueId)
           .filter(Boolean) as string[]
       ));
       
-      const leaguesMap = await fetchLeagueNames(leagueIds);
-      setLeagueNames(leaguesMap);
+      if (leagueIds.length > 0) {
+        const leaguesMap = await fetchLeagueNames(leagueIds);
+        setLeagueNames(leaguesMap);
+      }
 
-      // Check for new invitations
-      const newInvites = userGames.filter(
-        (game) =>
-          game.status === "invited" && game.opponent === auth.currentUser?.uid,
-      );
-
-      // Only trigger notification refresh if we have new invitations
-      if (newInvites.length > 0 && refreshNotifications) {
+      // Refresh notifications if needed
+      if (refreshNotifications) {
         refreshNotifications();
       }
     } catch (error) {
@@ -390,11 +381,12 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
     }
   }, [navigate, refreshNotifications, fetchLeagueNames]);
 
-  // Optimize real-time listeners with stable references
+  // Simplified real-time updates
   useEffect(() => {
     const currentUser = auth.currentUser;
     if (!currentUser) return;
 
+    // Initial load
     const fetchGames = async () => {
       setGameState(prev => ({ ...prev, loading: true }));
       await refreshGames();
@@ -403,49 +395,36 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
 
     fetchGames();
 
-    // Set up real-time listeners for game updates
+    // Simple real-time listener for game updates
     const db = getFirestore();
-
-    // Create queries with stable references
-    const creatorQuery = query(
+    const gamesQuery = query(
       collection(db, "games"),
-      where("createdBy", "==", currentUser.uid),
+      where("createdBy", "==", currentUser.uid)
     );
-
+    
     const opponentQuery = query(
       collection(db, "games"),
-      where("opponent", "==", currentUser.uid),
+      where("opponent", "==", currentUser.uid)
     );
 
-    // Debounced refresh to avoid excessive calls
-    let refreshTimeout: NodeJS.Timeout;
-    const debouncedRefresh = () => {
-      clearTimeout(refreshTimeout);
-      refreshTimeout = setTimeout(() => {
+    // Throttled refresh to avoid excessive calls
+    let lastRefresh = 0;
+    const throttledRefresh = () => {
+      const now = Date.now();
+      if (now - lastRefresh > 2000) { // 2 second throttle
+        lastRefresh = now;
         refreshGames();
-      }, 500); // 500ms debounce
+      }
     };
 
-    // Set up the listeners
-    const creatorUnsubscribe = onSnapshot(creatorQuery, (snapshot) => {
-      if (!snapshot.empty && snapshot.docChanges().length > 0) {
-        debouncedRefresh();
-      }
-    });
+    const unsubscribe1 = onSnapshot(gamesQuery, throttledRefresh);
+    const unsubscribe2 = onSnapshot(opponentQuery, throttledRefresh);
 
-    const opponentUnsubscribe = onSnapshot(opponentQuery, (snapshot) => {
-      if (!snapshot.empty && snapshot.docChanges().length > 0) {
-        debouncedRefresh();
-      }
-    });
-
-    // Clean up listeners when component unmounts
     return () => {
-      clearTimeout(refreshTimeout);
-      creatorUnsubscribe();
-      opponentUnsubscribe();
+      unsubscribe1();
+      unsubscribe2();
     };
-  }, []); // Empty dependency array - only run once
+  }, []); // Empty dependency array
 
   // Helper to format date - memoized
   const formatDate = useCallback((timestamp: unknown): string => {
@@ -499,55 +478,30 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
     };
   }, [userProfiles]);
 
-  // Transform games data for table display - memoized
+  // Simplified table data transformation
   const tableData = useMemo(() => {
     return gameState.games.map((game): GameTableRow => {
       const isCreator = auth.currentUser?.uid === game.createdBy;
       const opponentData = getOpponentData(game);
       
-      // Determine status display and color
-      let statusDisplay = "";
-      let statusColor = "";
-      let result: "Won" | "Lost" | null = null;
-      
-      switch (game.status) {
-        case "invited":
-          if (game.opponent === auth.currentUser?.uid) {
-            statusDisplay = "New Invitation";
-            statusColor = "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-100 animate-pulse";
-          } else {
-            statusDisplay = "Awaiting Response";
-            statusColor = "bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-300";
-          }
-          break;
-        case "accepted":
-          statusDisplay = "Ready to Play";
-          statusColor = "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100";
-          break;
-        case "in_progress":
-          statusDisplay = "In Progress";
-          statusColor = "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-100";
-          break;
-        case "waiting_confirmation":
-          statusDisplay = "Waiting Confirmation";
-          statusColor = "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-100";
-          break;
-        case "completed":
-          statusDisplay = "Completed";
-          statusColor = "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-100";
-          result = game.winner === auth.currentUser?.uid ? "Won" : "Lost";
-          break;
-        case "rejected":
-          statusDisplay = "Rejected";
-          statusColor = "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100";
-          break;
-        default:
-          statusDisplay = game.status;
-          statusColor = "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-100";
-      }
+      // Simplified status logic
+      const statusMap = {
+        invited: game.opponent === auth.currentUser?.uid 
+          ? { display: "New Invitation", color: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-100 animate-pulse" }
+          : { display: "Awaiting Response", color: "bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-300" },
+        accepted: { display: "Ready to Play", color: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100" },
+        in_progress: { display: "🔥 In Progress", color: "bg-gradient-to-r from-green-400 to-green-600 text-white dark:from-green-500 dark:to-green-700 animate-pulse shadow-lg border border-green-300" },
+        waiting_confirmation: { display: "Waiting Confirmation", color: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-100" },
+        completed: { display: "Completed", color: "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-100" },
+        rejected: { display: "Rejected", color: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100" }
+      };
 
-      // Create game info string - simplified for mobile
-      const gameInfo = game.settings.gameMode === "single" ? "Individual" : "Teams";
+      const status = statusMap[game.status as keyof typeof statusMap] || 
+        { display: game.status, color: "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-100" };
+
+      const result = game.status === "completed" && game.winner
+        ? (game.winner === auth.currentUser?.uid ? "Won" : "Lost")
+        : null;
 
       return {
         ...game,
@@ -555,73 +509,62 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
         opponentPhotoURL: opponentData.photoURL,
         opponentInitials: opponentData.initials,
         formattedDate: formatDate(game.createdAt),
-        statusDisplay,
-        statusColor,
-        gameInfo,
-        result,
+        statusDisplay: status.display,
+        statusColor: status.color,
+        gameInfo: game.settings.gameMode === "single" ? "Individual" : "Teams",
+        result: result as "Won" | "Lost" | null,
         leagueName: game.leagueId ? (leagueNames[game.leagueId] || "League Game") : "Individual",
       };
     });
   }, [gameState.games, getOpponentData, formatDate, leagueNames]);
 
-  // Handle accepting a game invitation - memoized
+  // Simplified invitation handling
   const handleAcceptInvitation = useCallback(async (gameId: string) => {
-    try {
-      // Check if user is already in an active game before proceeding
-      if (isInActiveGame) {
-        setGameState(prev => ({ 
-          ...prev, 
-          error: "You cannot accept this invitation because you're already in an active game" 
-        }));
-        return;
-      }
+    if (isInActiveGame) {
+      setGameState(prev => ({ 
+        ...prev, 
+        error: "You cannot accept this invitation because you're already in an active game" 
+      }));
+      return;
+    }
 
+    try {
       setActionInProgress(gameId);
       const result = await acceptGameInvitation(gameId);
       if (result) {
-        // Refresh games list
         await refreshGames();
         setIsInActiveGame(true);
       }
     } catch (error) {
-      console.error("Error accepting invitation:", error);
       setGameState(prev => ({ ...prev, error: "Failed to accept game invitation" }));
     } finally {
       setActionInProgress(null);
     }
   }, [isInActiveGame, refreshGames]);
 
-  // Handle rejecting a game invitation - memoized
   const handleRejectInvitation = useCallback(async (gameId: string) => {
     try {
       setActionInProgress(gameId);
       const result = await rejectGameInvitation(gameId);
       if (result) {
-        // Refresh games list
         await refreshGames();
       }
     } catch (error) {
-      console.error("Error rejecting invitation:", error);
       setGameState(prev => ({ ...prev, error: "Failed to reject game invitation" }));
     } finally {
       setActionInProgress(null);
     }
   }, [refreshGames]);
 
-  // Handle starting a game - memoized
   const handleStartGame = useCallback(async (gameId: string) => {
     try {
       setActionInProgress(gameId);
       const result = await startGame(gameId);
       if (result) {
-        // Refresh games list
         await refreshGames();
-
-        // Navigate to game detail page
         navigate(`/game/${gameId}`);
       }
     } catch (error) {
-      console.error("Error starting game:", error);
       setGameState(prev => ({ ...prev, error: "Failed to start the game" }));
     } finally {
       setActionInProgress(null);
@@ -670,18 +613,15 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
     },
   });
 
-  // Memoized notification indicators for header
+  // Simplified notification indicators
   const notificationState = useMemo(() => {
-    const newInvitations = tableData.filter(
-      (game) => game.status === "invited" && game.opponent === auth.currentUser?.uid
-    );
-    const activeGames = tableData.filter(
-      (game) => game.status === "accepted" || game.status === "in_progress" || game.status === "waiting_confirmation"
-    );
+    const invitations = tableData.filter(g => g.status === "invited" && g.opponent === auth.currentUser?.uid);
+    const inProgress = tableData.filter(g => g.status === "in_progress");
     
     return {
-      hasNewInvitations: newInvitations.length > 0,
-      hasActiveGames: activeGames.length > 0,
+      hasNewInvitations: invitations.length > 0,
+      hasInProgressGames: inProgress.length > 0,
+      inProgressCount: inProgress.length,
     };
   }, [tableData]);
 
@@ -704,6 +644,17 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
                 <BellAlertIcon className="h-5 w-5 text-amber-500 animate-bounce" />
                 <span className="ml-1 text-sm font-medium text-amber-600">
                   New Invitations!
+                </span>
+              </span>
+            )}
+            {notificationState.hasInProgressGames && (
+              <span className="ml-3 inline-flex items-center">
+                <div className="relative">
+                  <div className="h-3 w-3 bg-green-500 rounded-full animate-pulse"></div>
+                  <div className="absolute top-0 left-0 h-3 w-3 bg-green-400 rounded-full animate-ping opacity-75"></div>
+                </div>
+                <span className="ml-2 text-sm font-medium text-green-600 dark:text-green-400">
+                  {notificationState.inProgressCount} Game{notificationState.inProgressCount > 1 ? 's' : ''} in Progress
                 </span>
               </span>
             )}
@@ -730,9 +681,6 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
                 />
               </svg>
             </button>
-            <div className="ml-3 text-xs text-gray-500 dark:text-gray-400">
-              Real-time updates enabled
-            </div>
           </div>
         </div>
         <Link
@@ -778,6 +726,27 @@ const GamesList: React.FC<GamesListProps> = ({ refreshNotifications }) => {
             You must complete your active game before creating or joining a new
             one.
           </p>
+        </div>
+      )}
+
+      {notificationState.hasInProgressGames && (
+        <div className="mb-6 p-4 bg-green-50 border border-green-200 text-green-800 dark:bg-green-900/20 dark:border-green-900 dark:text-green-200 rounded-md">
+          <div className="flex items-center">
+            <div className="relative mr-3">
+              <div className="h-4 w-4 bg-green-500 rounded-full animate-pulse"></div>
+              <div className="absolute top-0 left-0 h-4 w-4 bg-green-400 rounded-full animate-ping opacity-75"></div>
+            </div>
+            <div>
+              <p className="font-medium">
+                {notificationState.inProgressCount} game{notificationState.inProgressCount > 1 ? 's' : ''} currently in progress!
+              </p>
+              <p className="text-sm">
+                {notificationState.inProgressCount === 1 
+                  ? "Your game is active. Click on it to continue playing." 
+                  : "You have multiple active games. Click on any to continue playing."}
+              </p>
+            </div>
+          </div>
         </div>
       )}
 

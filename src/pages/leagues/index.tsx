@@ -8,8 +8,9 @@ import {
   where,
   orderBy,
 } from "firebase/firestore";
-import { auth } from "../../firebase";
+import { auth, validateAndUpdateLeagueStatus } from "../../firebase";
 import { isJudge } from "../../utils/auth";
+import { useMultipleLeagueStatuses, useLeagueStatusDisplay } from "../../hooks/useLeagueStatus";
 import {
   TrophyIcon,
   PlusIcon,
@@ -29,23 +30,23 @@ const LeagueCard = memo<{
   isMyLeague?: boolean;
   userIsJudge: boolean;
   onNavigate?: () => void;
-}>(({ league, isMyLeague = false, userIsJudge, onNavigate }) => {
+  currentStatus?: string; // Override status from hook
+}>(({ league, isMyLeague = false, userIsJudge, onNavigate, currentStatus }) => {
   const handleClick = useCallback(() => {
     onNavigate?.();
   }, [onNavigate]);
 
+  // Use current status if provided, otherwise use league status
+  const displayStatus = currentStatus || league.status;
+  const statusDisplay = useLeagueStatusDisplay(displayStatus);
+
   const statusConfig = useMemo(() => {
-    switch (league.status) {
-      case "active":
-        return { bg: "bg-green-500", text: "text-white", label: "Active" };
-      case "upcoming":
-        return { bg: "bg-yellow-500", text: "text-white", label: "Upcoming" };
-      case "completed":
-        return { bg: "bg-gray-500", text: "text-white", label: "Completed" };
-      default:
-        return { bg: "bg-gray-500", text: "text-white", label: "Unknown" };
-    }
-  }, [league.status]);
+    return {
+      bg: statusDisplay.color,
+      text: "text-white",
+      label: statusDisplay.label
+    };
+  }, [statusDisplay]);
 
   const membershipStatus = useMemo(() => {
     // Check if user is the creator/administrator of this league
@@ -65,8 +66,8 @@ const LeagueCard = memo<{
       };
     }
     
-    // Check if join requests are allowed for this league
-    if (league.settings?.allowJoinRequests !== false) {
+    // Check if join requests are allowed for this league and if league is active
+    if (league.settings?.allowJoinRequests !== false && (displayStatus === "active" || displayStatus === "upcoming")) {
       return {
         text: "Join",
         className: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200 hover:bg-green-200 dark:hover:bg-green-900/50",
@@ -75,9 +76,9 @@ const LeagueCard = memo<{
       };
     }
     
-    // If join requests are not allowed, don't show join option
+    // If league is completed or join requests are not allowed
     return null;
-  }, [userIsJudge, isMyLeague, league.id, league.createdBy, league.settings?.allowJoinRequests]);
+  }, [userIsJudge, isMyLeague, league.id, league.createdBy, league.settings?.allowJoinRequests, displayStatus]);
 
   return (
     <div className="bg-white dark:bg-zinc-800 rounded-lg shadow-sm border border-gray-200 dark:border-zinc-700 overflow-hidden hover:shadow-md transition-all duration-200 hover:border-blue-300 dark:hover:border-blue-600">
@@ -178,19 +179,22 @@ const LeagueCard = memo<{
 LeagueCard.displayName = 'LeagueCard';
 
 // Memoized My League Card (optimized for the "My Leagues" section)
-const MyLeagueCard = memo<{ league: League; onNavigate?: () => void }>(({ league, onNavigate }) => {
+const MyLeagueCard = memo<{ 
+  league: League; 
+  onNavigate?: () => void;
+  currentStatus?: string; // Override status from hook
+}>(({ league, onNavigate, currentStatus }) => {
+  // Use current status if provided, otherwise use league status
+  const displayStatus = currentStatus || league.status;
+  const statusDisplay = useLeagueStatusDisplay(displayStatus);
+
   const statusConfig = useMemo(() => {
-    switch (league.status) {
-      case "active":
-        return { bg: "bg-green-500", text: "text-white", label: "Active" };
-      case "upcoming":
-        return { bg: "bg-yellow-500", text: "text-white", label: "Upcoming" };
-      case "completed":
-        return { bg: "bg-gray-500", text: "text-white", label: "Completed" };
-      default:
-        return { bg: "bg-gray-500", text: "text-white", label: "Unknown" };
-    }
-  }, [league.status]);
+    return {
+      bg: statusDisplay.color,
+      text: "text-white",
+      label: statusDisplay.label
+    };
+  }, [statusDisplay]);
 
   return (
     <Link
@@ -306,6 +310,15 @@ const LeaguesPage: React.FC = () => {
   // Memoized user judge status
   const userIsJudge = useMemo(() => auth.currentUser ? isJudge(auth.currentUser) : false, []);
 
+  // Get all league IDs for status validation
+  const allLeagueIds = useMemo(() => 
+    leagueState.allLeagues.map(league => league.id), 
+    [leagueState.allLeagues]
+  );
+
+  // Use the multiple league statuses hook to validate and update statuses
+  const { statuses: validatedStatuses, loading: statusesLoading } = useMultipleLeagueStatuses(allLeagueIds);
+
   // Optimized data fetching with parallel queries
   const fetchLeaguesData = useCallback(async (statusFilter: string) => {
     setLeagueState(prev => ({ ...prev, loading: true, error: null }));
@@ -397,7 +410,7 @@ const LeaguesPage: React.FC = () => {
     fetchLeaguesData(filterState.status);
   }, [filterState.status, fetchLeaguesData]);
 
-  // Memoized filtered leagues for search
+  // Memoized filtered leagues for search with updated statuses
   const filteredLeagues = useMemo(() => {
     if (!filterState.searchTerm.trim()) {
       return leagueState.allLeagues;
@@ -405,11 +418,19 @@ const LeaguesPage: React.FC = () => {
 
     const search = filterState.searchTerm.toLowerCase().trim();
     return leagueState.allLeagues.filter(
-      (league) =>
-        league.name.toLowerCase().includes(search) ||
-        (league.description && league.description.toLowerCase().includes(search))
+      (league) => {
+        // Use validated status for filtering if available
+        const currentStatus = validatedStatuses[league.id] || league.status;
+        
+        const matchesSearch = league.name.toLowerCase().includes(search) ||
+          (league.description && league.description.toLowerCase().includes(search));
+        
+        const matchesFilter = filterState.status === "all" || currentStatus === filterState.status;
+        
+        return matchesSearch && matchesFilter;
+      }
     );
-  }, [leagueState.allLeagues, filterState.searchTerm]);
+  }, [leagueState.allLeagues, filterState.searchTerm, filterState.status, validatedStatuses]);
 
   // Memoized filter handlers
   const handleFilterChange = useCallback((newFilter: typeof filterState.status) => {
@@ -518,6 +539,7 @@ const LeaguesPage: React.FC = () => {
               <MyLeagueCard 
                 key={league.id} 
                 league={league} 
+                currentStatus={validatedStatuses[league.id]} // Pass validated status
                 onNavigate={handleNavigation}
               />
             ))}
@@ -562,6 +584,7 @@ const LeaguesPage: React.FC = () => {
                   league={league}
                   isMyLeague={isMyLeague}
                   userIsJudge={userIsJudge}
+                  currentStatus={validatedStatuses[league.id]} // Pass validated status
                   onNavigate={handleNavigation}
                 />
               );

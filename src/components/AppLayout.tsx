@@ -29,6 +29,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
+import { useActiveGames } from '../hooks/useActiveGames';
 import { Avatar } from './avatar';
 import { ProfileAvatar } from './profile-avatar';
 import { LoginButton } from './login-button';
@@ -59,9 +60,11 @@ interface AppLayoutProps {
 // Static navbar component (never re-renders unless user changes)
 const StaticNavbar = memo<{
   user: User | null;
+  hasInProgressGames: boolean;
+  inProgressCount: number;
   handleLogin: () => Promise<void>;
   handleLogout: () => Promise<void>;
-}>(({ user, handleLogin, handleLogout }) => {
+}>(({ user, hasInProgressGames, inProgressCount, handleLogin, handleLogout }) => {
   const { closeSidebar } = useSidebarContext();
   
   // Function to close sidebar on mobile
@@ -75,6 +78,23 @@ const StaticNavbar = memo<{
   <Navbar>
     <NavbarSpacer />
     <NavbarSection>
+      {/* Active Games Indicator */}
+      {hasInProgressGames && (
+        <Link to="/games" onClick={handleLinkClick}>
+          <NavbarItem className="relative" aria-label={`${inProgressCount} games in progress`}>
+            <div className="relative">
+              <div className="h-6 w-6 bg-green-500 rounded-full flex items-center justify-center animate-pulse">
+                <span className="text-white text-xs font-bold">🔥</span>
+              </div>
+              <div className="absolute -top-1 -right-1 h-4 w-4 bg-red-500 rounded-full flex items-center justify-center">
+                <span className="text-white text-xs font-bold">{inProgressCount}</span>
+              </div>
+              <div className="absolute top-0 left-0 h-6 w-6 bg-green-400 rounded-full animate-ping opacity-75"></div>
+            </div>
+          </NavbarItem>
+        </Link>
+      )}
+      
       <Link to="/create-game" onClick={handleLinkClick}>
         <NavbarItem aria-label="New Game">
           <PlayIcon />
@@ -163,10 +183,12 @@ StaticNavbar.displayName = 'StaticNavbar';
 const StaticSidebar = memo<{
   user: User | null;
   pendingInvitations: number;
+  hasInProgressGames: boolean;
+  inProgressCount: number;
   handleLogin: () => Promise<void>;
   handleLogout: () => Promise<void>;
   refreshInvitations: () => Promise<void>;
-}>(({ user, pendingInvitations, handleLogin, handleLogout, refreshInvitations }) => {
+}>(({ user, pendingInvitations, hasInProgressGames, inProgressCount, handleLogin, handleLogout, refreshInvitations }) => {
   // Detect if mobile for dropdown positioning
   const isMobile = typeof window !== 'undefined' && window.innerWidth < 1024;
   const { closeSidebar } = useSidebarContext();
@@ -190,7 +212,7 @@ const StaticSidebar = memo<{
       <Link to="/" onClick={handleLinkClick}>
         <SidebarItem className="lg:mb-2.5">
           <Avatar src="/usa-federation.png" square className="w-32 h-32" />
-          <SidebarLabel className="text-white">USA Domino</SidebarLabel>
+          <SidebarLabel className="text-white">Domino Gamer</SidebarLabel>
         </SidebarItem>
       </Link>
       <SidebarSection className="max-lg:hidden">
@@ -229,8 +251,23 @@ const StaticSidebar = memo<{
               {pendingInvitations > 0 && (
                 <NotificationIndicator count={pendingInvitations} size="small" />
               )}
+              {hasInProgressGames && (
+                <div className="absolute -top-1 -left-1">
+                  <div className="relative">
+                    <div className="h-3 w-3 bg-green-500 rounded-full animate-pulse"></div>
+                    <div className="absolute top-0 left-0 h-3 w-3 bg-green-400 rounded-full animate-ping opacity-75"></div>
+                  </div>
+                </div>
+              )}
             </div>
-            <SidebarLabel>My Games</SidebarLabel>
+            <SidebarLabel className="flex items-center">
+              My Games
+              {hasInProgressGames && (
+                <span className="ml-2 text-xs bg-green-500 text-white px-1.5 py-0.5 rounded-full animate-pulse">
+                  {inProgressCount} Live
+                </span>
+              )}
+            </SidebarLabel>
           </SidebarItem>
         </Link>
         <Link to="/settings" onClick={handleLinkClick}>
@@ -334,25 +371,32 @@ export const AppLayout = memo<AppLayoutProps>(({
   refreshInvitations, 
   children 
 }) => {
+  // Use active games hook here (in the main component)
+  const { hasInProgressGames, count: inProgressCount } = useActiveGames();
+
   // Memoize navbar (only changes when user auth state changes)
   const navbar = useMemo(() => (
     <StaticNavbar 
       user={user} 
+      hasInProgressGames={hasInProgressGames}
+      inProgressCount={inProgressCount}
       handleLogin={handleLogin} 
       handleLogout={handleLogout} 
     />
-  ), [user, handleLogin, handleLogout]);
+  ), [user, hasInProgressGames, inProgressCount, handleLogin, handleLogout]);
 
   // Memoize sidebar (only changes when user or notifications change)
   const sidebar = useMemo(() => (
     <StaticSidebar 
       user={user} 
       pendingInvitations={pendingInvitations}
+      hasInProgressGames={hasInProgressGames}
+      inProgressCount={inProgressCount}
       handleLogin={handleLogin} 
       handleLogout={handleLogout}
       refreshInvitations={refreshInvitations}
     />
-  ), [user, pendingInvitations, handleLogin, handleLogout, refreshInvitations]);
+  ), [user, pendingInvitations, hasInProgressGames, inProgressCount, handleLogin, handleLogout, refreshInvitations]);
 
   return (
     <SidebarLayout navbar={navbar} sidebar={sidebar}>

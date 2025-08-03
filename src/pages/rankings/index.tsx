@@ -1,12 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo, memo } from "react";
 import { Link } from "react-router-dom";
 import {
-  getAllLeaguesWithRankings,
   calculateTitle,
   RankingEntry as RankingEntryType,
   UserProfile,
   getUserProfile,
-  getAllSeasons,
 } from "../../firebase";
 import { Timestamp } from "firebase/firestore";
 import { Season } from "../../models/league";
@@ -47,31 +45,10 @@ import {
 } from "../../components/ui/dropdown-menu";
 import { ChevronDownIcon } from "@heroicons/react/24/solid";
 import UserProfileModal, { useUserProfileModal } from "../../components/UserProfileModal";
+import { useRankings } from "../../hooks/useRankings";
 
 // Use the RankingEntry type from firebase.ts
 type RankingEntry = RankingEntryType;
-
-// Helper function to convert RankingEntry to UserProfile
-const convertRankingEntryToUserProfile = (entry: RankingEntry): UserProfile => {
-  return {
-    uid: entry.userId,
-    displayName: entry.displayName,
-    username: entry.username,
-    email: "", // Not available in RankingEntry
-    photoURL: entry.photoURL,
-    createdAt: Timestamp.now(), // Placeholder timestamp
-    stats: {
-      gamesPlayed: entry.gamesPlayed,
-      gamesWon: entry.gamesWon,
-      totalPoints: entry.totalPoints,
-      globalRank: entry.rank,
-      // These properties are not available in RankingEntry, so we provide defaults
-      winStreak: 0, // Not available in RankingEntry
-      maxWinStreak: 0, // Not available in RankingEntry
-    },
-    hasSetUsername: !!entry.username,
-  };
-};
 
 // League with rankings interface
 interface LeagueWithRankings {
@@ -91,7 +68,82 @@ interface RankingTableRow extends RankingEntry {
   formattedTitle: string;
   positionDisplay: string;
   playerDisplay: React.ReactNode;
+  winPercentage: number;
 }
+
+// Cache for user profiles to reduce Firebase calls with size limit
+const userProfileCache = new Map<string, { profile: UserProfile; timestamp: number }>();
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes cache
+const MAX_CACHE_SIZE = 100; // Limit cache size
+
+// Clean expired entries periodically
+const cleanExpiredCache = () => {
+  const now = Date.now();
+  for (const [key, entry] of userProfileCache.entries()) {
+    if (now - entry.timestamp > CACHE_DURATION) {
+      userProfileCache.delete(key);
+    }
+  }
+};
+
+// Run cache cleanup every 5 minutes
+const cacheCleanupInterval = setInterval(cleanExpiredCache, CACHE_DURATION);
+
+// Clean up interval on module unload (if running in browser)
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    clearInterval(cacheCleanupInterval);
+  });
+}
+
+// Optimized user profile fetcher with cache and size management
+const getCachedUserProfile = async (userId: string): Promise<UserProfile | null> => {
+  const now = Date.now();
+  const cached = userProfileCache.get(userId);
+  
+  if (cached && (now - cached.timestamp) < CACHE_DURATION) {
+    return cached.profile;
+  }
+  
+  try {
+    const profile = await getUserProfile(userId);
+    if (profile) {
+      // Implement LRU cache with size limit
+      if (userProfileCache.size >= MAX_CACHE_SIZE) {
+        const firstKey = userProfileCache.keys().next().value;
+        if (firstKey) {
+          userProfileCache.delete(firstKey);
+        }
+      }
+      userProfileCache.set(userId, { profile, timestamp: now });
+    }
+    return profile;
+  } catch (error) {
+    console.error("Error fetching user profile:", error);
+    return null;
+  }
+};
+
+// Helper function to convert RankingEntry to UserProfile with better error handling
+const convertRankingEntryToUserProfile = (entry: RankingEntry): UserProfile => {
+  return {
+    uid: entry.userId,
+    displayName: entry.displayName,
+    username: entry.username,
+    email: "", // Not available in RankingEntry
+    photoURL: entry.photoURL,
+    createdAt: Timestamp.now(), // Placeholder timestamp
+    stats: {
+      gamesPlayed: entry.gamesPlayed,
+      gamesWon: entry.gamesWon,
+      totalPoints: entry.totalPoints,
+      globalRank: entry.rank,
+      winStreak: 0, // Not available in RankingEntry
+      maxWinStreak: 0, // Not available in RankingEntry
+    },
+    hasSetUsername: !!entry.username,
+  };
+};
 
 // Define columns for the rankings table
 const createRankingColumns = (
@@ -129,13 +181,10 @@ const createRankingColumns = (
     accessorKey: "winPercentage",
     header: "Win %",
     cell: ({ row }) => {
-      const entry = row.original;
-      const winPercentage = entry.gamesPlayed > 0 
-        ? ((entry.gamesWon / entry.gamesPlayed) * 100).toFixed(1)
-        : "0.0";
+      const winPercentage = row.getValue("winPercentage") as number;
       return (
         <div className="text-xs sm:text-sm text-center font-medium">
-          {winPercentage}%
+          {winPercentage.toFixed(1)}%
         </div>
       );
     },
@@ -194,7 +243,7 @@ const NoDataState = memo<{ isFiltered?: boolean }>(({ isFiltered = false }) => (
   </Card>
 ));
 
-// League Rankings Table Component
+// League Rankings Table Component with better memoization
 const LeagueRankingsTable: React.FC<{
   league: LeagueWithRankings;
   onPlayerClick: (player: RankingEntry) => void;
@@ -202,7 +251,7 @@ const LeagueRankingsTable: React.FC<{
   // Table states
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
 
-  // Helper function to create player display with avatar
+  // Helper function to create player display with avatar - memoized per league
   const createPlayerDisplay = useCallback((entry: RankingEntry) => {
     return (
       <div className="font-medium text-xs sm:text-sm flex items-center space-x-2">
@@ -219,17 +268,18 @@ const LeagueRankingsTable: React.FC<{
     );
   }, []);
 
-  // Transform rankings data for table display
+  // Transform rankings data for table display - deep memo with league.id
   const tableData = useMemo(() => {
     return league.rankings.map((entry, index): RankingTableRow => ({
       ...entry,
       formattedTitle: calculateTitle(entry.gamesWon),
       positionDisplay: (index + 1).toString(),
       playerDisplay: createPlayerDisplay(entry),
+      winPercentage: entry.gamesPlayed > 0 ? (entry.gamesWon / entry.gamesPlayed) * 100 : 0,
     }));
-  }, [league.rankings, createPlayerDisplay]);
+  }, [league.id, league.rankings, createPlayerDisplay]); // Add league.id for better dependency tracking
 
-  // Create columns with click handler
+  // Create columns with click handler - stable reference
   const columns = useMemo(() => 
     createRankingColumns(onPlayerClick), 
     [onPlayerClick]
@@ -390,13 +440,8 @@ const LeagueRankingsTable: React.FC<{
 });
 
 const Rankings: React.FC = () => {
-  const [leagues, setLeagues] = useState<LeagueWithRankings[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  
-  // Global seasons state
-  const [globalSeasons, setGlobalSeasons] = useState<Season[]>([]);
-  const [seasonsLoading, setSeasonsLoading] = useState(false);
+  // Use optimized rankings hook with caching
+  const { leagues, globalSeasons, loading, error, refetch, clearError } = useRankings();
   
   // Filter states
   const [filters, setFilters] = useState({
@@ -408,111 +453,95 @@ const Rankings: React.FC = () => {
   // Use the user profile modal hook
   const { isOpen: isProfileModalOpen, selectedUser, openModal: openProfileModal, closeModal: closeProfileModal } = useUserProfileModal();
 
-  const fetchLeaguesWithRankings = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const leaguesData = await getAllLeaguesWithRankings();
-      setLeagues(leaguesData);
-    } catch (error) {
-      console.error("Error fetching leagues with rankings:", error);
-      setError("Failed to load leagues and rankings data");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // Load global seasons
-  const fetchGlobalSeasons = useCallback(async () => {
-    setSeasonsLoading(true);
-    try {
-      // Get global seasons (without leagueId)
-      const seasons = await getAllSeasons();
-      setGlobalSeasons(seasons);
-    } catch (error) {
-      console.error("Error fetching global seasons:", error);
-    } finally {
-      setSeasonsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchLeaguesWithRankings();
-    fetchGlobalSeasons();
-  }, [fetchLeaguesWithRankings, fetchGlobalSeasons]);
-
-  // Handle player click - simplified with new modal hook
+  // Optimized player click handler with better caching
   const handlePlayerClick = useCallback(async (player: RankingEntry) => {
     try {
-      // Get the complete user profile to include all stats (winStreak, maxWinStreak, etc.)
-      const fullUserProfile = await getUserProfile(player.userId);
+      // Try to get full profile from cache first, then Firebase
+      const fullUserProfile = await getCachedUserProfile(player.userId);
       
       if (fullUserProfile) {
         openProfileModal(fullUserProfile);
       } else {
-        // Fallback to converted profile if getUserProfile fails
+        // Fallback to converted profile if cache and Firebase fail
         const userProfile = convertRankingEntryToUserProfile(player);
         openProfileModal(userProfile);
       }
     } catch (error) {
       console.error("Error fetching user profile:", error);
-      // Fallback to converted profile on error
+      // Always provide fallback
       const userProfile = convertRankingEntryToUserProfile(player);
       openProfileModal(userProfile);
     }
   }, [openProfileModal]);
 
-  // Memoized filter options
+  // Optimized filter options with better memoization and stable references
   const filterOptions = useMemo(() => {
     const years = new Set<number>();
     
+    // Extract years more efficiently
     leagues.forEach(league => {
-      // Extract year from createdAt timestamp
-      if (league.createdAt && league.createdAt.toDate) {
+      if (league.createdAt?.toDate) {
         try {
           const year = league.createdAt.toDate().getFullYear();
           years.add(year);
         } catch (error) {
-          console.warn('Error parsing createdAt date for league:', league.id, error);
+          // Silently skip invalid dates
         }
       }
     });
 
-    return {
-      leagues: [
-        { id: "all", name: "All Leagues" },
-        ...leagues.map(league => ({ id: league.id, name: league.name }))
-      ],
-      years: [
-        { value: "all", label: "All Years" },
-        ...Array.from(years).sort((a, b) => b - a).map(year => ({ 
-          value: year.toString(), 
-          label: year.toString() 
-        }))
-      ],
-      seasons: [
-        { value: "all", label: "All Seasons" },
-        ...globalSeasons.map(season => ({ 
-          value: season.id, 
-          label: season.name 
-        }))
-      ]
-    };
-  }, [leagues, globalSeasons]);
+    const leagueOptions = [
+      { id: "all", name: "All Leagues" },
+      ...leagues.map(league => ({ id: league.id, name: league.name }))
+    ];
 
-  // Filtered leagues based on current filters
+    const yearOptions = [
+      { value: "all", label: "All Years" },
+      ...Array.from(years)
+        .sort((a, b) => b - a) // Most recent first
+        .map(year => ({ value: year.toString(), label: year.toString() }))
+    ];
+
+    const seasonOptions = [
+      { value: "all", label: "All Seasons" },
+      ...globalSeasons
+        .sort((a, b) => b.startDate.toMillis() - a.startDate.toMillis()) // Most recent first
+        .map(season => ({ value: season.id, label: season.name }))
+    ];
+
+    return {
+      leagues: leagueOptions,
+      years: yearOptions,
+      seasons: seasonOptions
+    };
+  }, [
+    leagues.map(l => `${l.id}-${l.name}`).join(','), // Stable dependency for leagues
+    globalSeasons.map(s => `${s.id}-${s.name}`).join(',') // Stable dependency for seasons
+  ]);
+
+  // More efficient filtering with early returns
   const filteredLeagues = useMemo(() => {
+    if (filters.league === "all" && filters.year === "all" && filters.season === "all") {
+      return leagues; // No filtering needed
+    }
+
     return leagues.filter(league => {
-      // League filter
+      // League filter - most selective first
       if (filters.league !== "all" && league.id !== filters.league) {
         return false;
       }
       
-      // Year filter - check the year from createdAt timestamp
+      // Season filter - check if league is associated with the selected season
+      if (filters.season !== "all") {
+        if (!league.seasonIds?.includes(filters.season)) {
+          return false;
+        }
+      }
+      
+      // Year filter - least selective last
       if (filters.year !== "all") {
-        if (!league.createdAt || !league.createdAt.toDate) {
-          return false; // Exclude leagues without valid createdAt
+        if (!league.createdAt?.toDate) {
+          return false;
         }
         try {
           const leagueYear = league.createdAt.toDate().getFullYear();
@@ -520,14 +549,6 @@ const Rankings: React.FC = () => {
             return false;
           }
         } catch (error) {
-          console.warn('Error parsing date for league:', league.id, error);
-          return false; // Exclude leagues with invalid dates
-        }
-      }
-      
-      // Season filter - check if league is associated with the selected season
-      if (filters.season !== "all") {
-        if (!league.seasonIds || !league.seasonIds.includes(filters.season)) {
           return false;
         }
       }
@@ -536,13 +557,23 @@ const Rankings: React.FC = () => {
     });
   }, [leagues, filters]);
 
-  // Filter change handlers
+  // Optimized filter change handler
   const handleFilterChange = useCallback((filterType: keyof typeof filters, value: string) => {
     setFilters(prev => ({
       ...prev,
       [filterType]: value
     }));
   }, []);
+
+  // Clear all filters handler
+  const clearAllFilters = useCallback(() => {
+    setFilters({ league: "all", year: "all", season: "all" });
+  }, []);
+
+  // Check if any filters are active
+  const hasActiveFilters = useMemo(() => {
+    return filters.league !== "all" || filters.year !== "all" || filters.season !== "all";
+  }, [filters]);
 
   if (loading) {
     return <LoadingState />;
@@ -553,20 +584,20 @@ const Rankings: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-6 space-y-4 sm:space-y-0">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold">League Rankings</h1>
-          {(filters.league !== "all" || filters.year !== "all" || filters.season !== "all") && (
+          {hasActiveFilters && (
             <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
               Showing {filteredLeagues.length} of {leagues.length} league{leagues.length !== 1 ? 's' : ''}
               {filters.season !== "all" && (
-                <span> • Filtered by season: {filterOptions.seasons.find(s => s.value === filters.season)?.label}</span>
+                <span> • Season: {filterOptions.seasons.find(s => s.value === filters.season)?.label}</span>
               )}
             </p>
           )}
         </div>
       </div>
 
-      {/* Filter controls */}
+      {/* Optimized Filter controls */}
       <Card className="mb-6">
-        <CardContent className="">
+        <CardContent>
           <div className="flex flex-col md:flex-row gap-4">
             {/* League Filter */}
             <div className="flex flex-col space-y-2">
@@ -580,14 +611,15 @@ const Rankings: React.FC = () => {
                     className="w-full md:w-48 justify-between"
                   >
                     {filterOptions.leagues.find(l => l.id === filters.league)?.name || "All Leagues"}
-                    <ChevronDownIcon className="ml-2 h-4 w-4" />
+                    <ChevronDownIcon className="ml-2 h-4 w-4 shrink-0" />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent className="w-48">
+                <DropdownMenuContent className="w-48 max-h-60 overflow-y-auto">
                   {filterOptions.leagues.map((league) => (
                     <DropdownMenuItem
                       key={league.id}
                       onClick={() => handleFilterChange("league", league.id)}
+                      className={filters.league === league.id ? "bg-accent" : ""}
                     >
                       {league.name}
                     </DropdownMenuItem>
@@ -608,7 +640,7 @@ const Rankings: React.FC = () => {
                     className="w-full md:w-32 justify-between"
                   >
                     {filterOptions.years.find(y => y.value === filters.year)?.label || "All Years"}
-                    <ChevronDownIcon className="ml-2 h-4 w-4" />
+                    <ChevronDownIcon className="ml-2 h-4 w-4 shrink-0" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent className="w-32">
@@ -616,6 +648,7 @@ const Rankings: React.FC = () => {
                     <DropdownMenuItem
                       key={year.value}
                       onClick={() => handleFilterChange("year", year.value)}
+                      className={filters.year === year.value ? "bg-accent" : ""}
                     >
                       {year.label}
                     </DropdownMenuItem>
@@ -628,22 +661,19 @@ const Rankings: React.FC = () => {
             <div className="flex flex-col space-y-2">
               <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
                 Season
-                {seasonsLoading && (
-                  <span className="ml-2 text-xs text-gray-500">(Loading...)</span>
-                )}
               </label>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button 
                     variant="outline" 
                     className="w-full md:w-40 justify-between"
-                    disabled={seasonsLoading}
+                    disabled={filterOptions.seasons.length <= 1}
                   >
                     {filterOptions.seasons.find(s => s.value === filters.season)?.label || "All Seasons"}
-                    <ChevronDownIcon className="ml-2 h-4 w-4" />
+                    <ChevronDownIcon className="ml-2 h-4 w-4 shrink-0" />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent className="w-40">
+                <DropdownMenuContent className="w-40 max-h-60 overflow-y-auto">
                   {filterOptions.seasons.length === 1 ? (
                     <DropdownMenuItem disabled>
                       No seasons available
@@ -653,6 +683,7 @@ const Rankings: React.FC = () => {
                       <DropdownMenuItem
                         key={season.value}
                         onClick={() => handleFilterChange("season", season.value)}
+                        className={filters.season === season.value ? "bg-accent" : ""}
                       >
                         {season.label}
                       </DropdownMenuItem>
@@ -663,12 +694,12 @@ const Rankings: React.FC = () => {
             </div>
 
             {/* Clear Filters Button */}
-            {(filters.league !== "all" || filters.year !== "all" || filters.season !== "all") && (
+            {hasActiveFilters && (
               <div className="flex flex-col justify-end">
                 <Button
                   variant="outline"
-                  onClick={() => setFilters({ league: "all", year: "all", season: "all" })}
-                  className="text-gray-600 dark:text-gray-400"
+                  onClick={clearAllFilters}
+                  className="text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
                 >
                   Clear Filters
                 </Button>
@@ -678,23 +709,38 @@ const Rankings: React.FC = () => {
         </CardContent>
       </Card>
 
+      {/* Error Display with Retry */}
       {error && (
-        <div className="mb-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded-md flex justify-between items-center">
-          <div>{error}</div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setError(null)}
-            className="ml-4 text-red-700 hover:text-red-800"
-          >
-            Dismiss
-          </Button>
-        </div>
+        <Card className="mb-6 border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/20">
+          <CardContent className="pt-6">
+            <div className="flex justify-between items-center">
+              <div className="text-red-700 dark:text-red-300">{error}</div>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={refetch}
+                  className="text-red-700 dark:text-red-300 border-red-300 dark:border-red-700"
+                >
+                  Retry
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={clearError}
+                  className="text-red-700 dark:text-red-300 border-red-300 dark:border-red-700"
+                >
+                  Dismiss
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
-      {/* Leagues with Rankings */}
+      {/* Optimized Rankings Display */}
       {filteredLeagues.length === 0 ? (
-        <NoDataState isFiltered={filters.league !== "all" || filters.year !== "all" || filters.season !== "all"} />
+        <NoDataState isFiltered={hasActiveFilters} />
       ) : (
         <div className="space-y-8">
           {filteredLeagues.map((league) => (

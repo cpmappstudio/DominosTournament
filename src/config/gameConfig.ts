@@ -30,15 +30,50 @@ export interface RulesetOption {
   deprecated?: boolean;
 }
 
+export interface StartingPlayerOption {
+  value: string;
+  label: string;
+  description?: string;
+  isDefault?: boolean;
+  deprecated?: boolean;
+}
+
+export interface TimeLimitOption {
+  value: number; // in minutes, 0 = no limit
+  label: string;
+  description?: string;
+  isDefault?: boolean;
+  deprecated?: boolean;
+}
+
+export interface NumberOfPlayersOption {
+  value: number;
+  label: string;
+  description?: string;
+  isDefault?: boolean;
+  deprecated?: boolean;
+  requiredGameModes?: string[]; // Which game modes support this
+}
+
 export interface GameConfigurationSchema {
   version: string; // For migration purposes
   lastUpdated: string;
   gameModes: GameModeOption[];
   pointsOptions: PointsOption[];
   rulesets: RulesetOption[];
+  // Extended configuration options
+  startingPlayerOptions: StartingPlayerOption[];
+  timeLimitOptions: TimeLimitOption[];
+  numberOfPlayersOptions: NumberOfPlayersOption[];
   // Future extensions can be added here
   features?: {
-    [key: string]: any;
+    enableTimeouts?: boolean;
+    allowSpectators?: boolean;
+    enableChat?: boolean;
+    maxPlayersPerGame?: number;
+    enablePenalties?: boolean;
+    allowDraws?: boolean;
+    enableConfirmation?: boolean;
   };
 }
 
@@ -93,7 +128,102 @@ export const DEFAULT_GAME_CONFIG: GameConfigurationSchema = {
       description: "Puerto Rican traditional rules",
       isDefault: false
     }
-  ]
+  ],
+  startingPlayerOptions: [
+    {
+      value: "creator",
+      label: "Game Creator",
+      description: "Creator always starts first",
+      isDefault: true
+    },
+    {
+      value: "opponent",
+      label: "Opponent",
+      description: "Opponent always starts first",
+      isDefault: false
+    },
+    {
+      value: "random",
+      label: "Random Selection",
+      description: "Starting player chosen randomly",
+      isDefault: false
+    },
+    {
+      value: "winner_previous",
+      label: "Previous Game Winner",
+      description: "Winner of previous game starts (for series)",
+      isDefault: false
+    },
+    {
+      value: "highest_double",
+      label: "Highest Double",
+      description: "Player with highest double starts (traditional)",
+      isDefault: false
+    }
+  ],
+  timeLimitOptions: [
+    {
+      value: 0,
+      label: "No Time Limit",
+      description: "Games can run indefinitely",
+      isDefault: true
+    },
+    {
+      value: 15,
+      label: "15 minutes",
+      description: "Quick game format",
+      isDefault: false
+    },
+    {
+      value: 30,
+      label: "30 minutes",
+      description: "Standard tournament format",
+      isDefault: false
+    },
+    {
+      value: 45,
+      label: "45 minutes",
+      description: "Extended tournament format",
+      isDefault: false
+    },
+    {
+      value: 60,
+      label: "1 hour",
+      description: "Long format game",
+      isDefault: false
+    },
+    {
+      value: 90,
+      label: "1.5 hours",
+      description: "Championship format",
+      isDefault: false
+    }
+  ],
+  numberOfPlayersOptions: [
+    {
+      value: 2,
+      label: "2 Players",
+      description: "Head-to-head competition",
+      isDefault: true,
+      requiredGameModes: ["single", "double"]
+    },
+    {
+      value: 4,
+      label: "4 Players",
+      description: "Team play (2 vs 2)",
+      isDefault: false,
+      requiredGameModes: ["double"]
+    }
+  ],
+  features: {
+    enableTimeouts: true,
+    allowSpectators: true,
+    enableChat: true,
+    maxPlayersPerGame: 4,
+    enablePenalties: true,
+    allowDraws: false,
+    enableConfirmation: true
+  }
 };
 
 // Configuration cache
@@ -190,6 +320,21 @@ export const getDefaultRuleset = async (): Promise<string> => {
   return config.rulesets.find(ruleset => ruleset.isDefault)?.value || config.rulesets[0].value;
 };
 
+export const getDefaultStartingPlayer = async (): Promise<string> => {
+  const config = await getGameConfig();
+  return config.startingPlayerOptions.find(option => option.isDefault)?.value || config.startingPlayerOptions[0].value;
+};
+
+export const getDefaultTimeLimit = async (): Promise<number> => {
+  const config = await getGameConfig();
+  return config.timeLimitOptions.find(option => option.isDefault)?.value || config.timeLimitOptions[0].value;
+};
+
+export const getDefaultNumberOfPlayers = async (): Promise<number> => {
+  const config = await getGameConfig();
+  return config.numberOfPlayersOptions.find(option => option.isDefault)?.value || config.numberOfPlayersOptions[0].value;
+};
+
 /**
  * Validate that a value exists in the current config
  */
@@ -206,6 +351,31 @@ export const validatePoints = async (value: number): Promise<boolean> => {
 export const validateRuleset = async (value: string): Promise<boolean> => {
   const config = await getGameConfig();
   return config.rulesets.some(ruleset => ruleset.value === value);
+};
+
+export const validateStartingPlayer = async (value: string): Promise<boolean> => {
+  const config = await getGameConfig();
+  return config.startingPlayerOptions.some(option => option.value === value);
+};
+
+export const validateTimeLimit = async (value: number): Promise<boolean> => {
+  const config = await getGameConfig();
+  return config.timeLimitOptions.some(option => option.value === value);
+};
+
+export const validateNumberOfPlayers = async (value: number): Promise<boolean> => {
+  const config = await getGameConfig();
+  return config.numberOfPlayersOptions.some(option => option.value === value);
+};
+
+/**
+ * Get valid number of players for a specific game mode
+ */
+export const getValidNumberOfPlayersForGameMode = async (gameMode: string): Promise<number[]> => {
+  const config = await getGameConfig();
+  return config.numberOfPlayersOptions
+    .filter(option => !option.requiredGameModes || option.requiredGameModes.includes(gameMode))
+    .map(option => option.value);
 };
 
 /**

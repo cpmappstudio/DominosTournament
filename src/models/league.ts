@@ -73,6 +73,10 @@ export interface LeagueSettings {
   allowJoinRequests: boolean;
   requireConfirmation: boolean;
   
+  // Game rules - unified ruleset system
+  ruleset?: string; // New dynamic ruleset system
+  useBoricuaRules?: boolean; // Legacy support - will be migrated to ruleset
+  
   // Scoring settings
   scoringSystem: {
     pointsPerWin: number;

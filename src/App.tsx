@@ -12,6 +12,7 @@ import {
 } from "./firebase";
 import UsernameSetup from "@/components/auth/UsernameSetup";
 import { isJudge } from "./utils/auth";
+import { browserScheduler } from "./utils/leagueStatusScheduler";
 
 // Direct imports for critical routes (instant loading)
 import Home from "./pages/Home";
@@ -151,6 +152,27 @@ const App = memo(() => {
 
     return () => unsubscribe();
   }, []);
+
+  // Initialize league status scheduler for authenticated users
+  useEffect(() => {
+    if (appState.user) {
+      // Use simpler visibility-based scheduler with much longer intervals
+      const cleanup = browserScheduler.startOnVisible({
+        interval: 4 * 60 * 60 * 1000, // 4 hours interval instead of 1 hour - much more reasonable
+        onUpdate: (result) => {
+          // Only log in development mode when there are actual updates
+          if (import.meta.env.DEV && result.updated > 0) {
+            console.log(`League statuses updated: ${result.updated} leagues`);
+          }
+        },
+        onError: (error) => {
+          console.error('League status scheduler error:', error);
+        }
+      });
+
+      return cleanup;
+    }
+  }, [appState.user]);
 
   // Memoized auth handlers
   const handleGoogleLogin = useCallback(async () => {

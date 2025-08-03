@@ -15,7 +15,8 @@ import {
   Timestamp,
   serverTimestamp,
   addDoc,
-  limit
+  limit,
+  deleteDoc
 } from "firebase/firestore";
 // Firebase Storage imports - ENABLED
 import { 
@@ -71,25 +72,34 @@ export interface UserProfile {
 export interface Game {
   id?: string;
   createdBy: string;
-  opponent: string;
+  opponent: string; // For backward compatibility - in team games, this is the first opponent
+  opponents?: string[]; // For multi-player support
   createdAt: Timestamp;
   updatedAt: Timestamp;
   completedAt?: Timestamp; // When the game was completed (for ranking timeframes)
   status: GameStatus;
   leagueId?: string; // Optional: if game is part of a league
+  teams?: {
+    team1: string[]; // Array of player IDs (includes creator)
+    team2: string[]; // Array of opponent IDs
+  };
   settings: {
     gameMode: GameMode;
     pointsToWin: number;
     numberOfPlayers?: number;
     startingPlayer?: string;
     useBoricuaRules?: boolean;
+    ruleset?: string; // New dynamic ruleset field
   };
   scores?: {
     creator: number;
     opponent: number;
+    team1?: number; // Team-based scoring
+    team2?: number; // Team-based scoring
   };
   confirmedBy?: string;
   winner?: string;
+  winningTeam?: 'team1' | 'team2'; // For team-based games
   activePlayer?: string; // Tracks which player's turn it is
   rejectionReason?: string; // Optional reason for rejection
 }
@@ -201,14 +211,18 @@ export const searchUsers = async (searchTerm: string): Promise<UserProfile[]> =>
 };
 
 // Game functions
-export const createGame = async (opponentId: string, settings: { 
-  gameMode: GameMode, 
-  pointsToWin: number,
-  numberOfPlayers?: number,
-  startingPlayer?: string,
-  useBoricuaRules?: boolean,
-  leagueId?: string
-}): Promise<Game | null> => {
+export const createGame = async (
+  opponentId: string, 
+  settings: { 
+    gameMode: GameMode, 
+    pointsToWin: number,
+    numberOfPlayers?: number,
+    startingPlayer?: string,
+    useBoricuaRules?: boolean,
+    ruleset?: string,
+    leagueId?: string
+  }
+): Promise<Game | null> => {
   try {
     if (!auth.currentUser) throw new Error("You must be logged in to create a game");
     
@@ -236,7 +250,8 @@ export const createGame = async (opponentId: string, settings: {
         pointsToWin: settings.pointsToWin,
         numberOfPlayers: settings.numberOfPlayers,
         startingPlayer: settings.startingPlayer,
-        useBoricuaRules: settings.useBoricuaRules
+        useBoricuaRules: settings.useBoricuaRules,
+        ruleset: settings.ruleset
       }
     };
     
@@ -245,6 +260,80 @@ export const createGame = async (opponentId: string, settings: {
   } catch (error) {
     console.error("Error creating game:", error);
     throw error; // Re-throw the error for better handling in UI
+  }
+};
+
+// Enhanced function for creating team-based games
+export const createTeamGame = async (
+  opponents: string[], 
+  settings: { 
+    gameMode: GameMode, 
+    pointsToWin: number,
+    numberOfPlayers?: number,
+    startingPlayer?: string,
+    useBoricuaRules?: boolean,
+    ruleset?: string,
+    leagueId?: string
+  },
+  teams?: {
+    team1: string[], // Partners (excluding creator)
+    team2: string[]  // Opponents
+  }
+): Promise<Game | null> => {
+  try {
+    if (!auth.currentUser) throw new Error("You must be logged in to create a game");
+    
+    // Check if creator is already in an active game
+    const isCreatorInGame = await isPlayerInActiveGame(auth.currentUser.uid);
+    if (isCreatorInGame) {
+      throw new Error("You cannot create a new game while you have an active game");
+    }
+    
+    // Check if any opponents are already in active games
+    for (const opponentId of opponents) {
+      const isOpponentInGame = await isPlayerInActiveGame(opponentId);
+      if (isOpponentInGame) {
+        throw new Error(`Player is already in an active game`);
+      }
+    }
+    
+    // If teams are provided, validate all partners as well
+    if (teams?.team1) {
+      for (const partnerId of teams.team1) {
+        const isPartnerInGame = await isPlayerInActiveGame(partnerId);
+        if (isPartnerInGame) {
+          throw new Error(`Partner is already in an active game`);
+        }
+      }
+    }
+    
+    const newGame: Omit<Game, "id"> = {
+      createdBy: auth.currentUser.uid,
+      opponent: opponents[0], // First opponent for backward compatibility
+      opponents: opponents,
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+      status: "invited",
+      leagueId: settings.leagueId,
+      teams: teams ? {
+        team1: [auth.currentUser.uid, ...teams.team1],
+        team2: teams.team2
+      } : undefined,
+      settings: {
+        gameMode: settings.gameMode,
+        pointsToWin: settings.pointsToWin,
+        numberOfPlayers: settings.numberOfPlayers,
+        startingPlayer: settings.startingPlayer,
+        useBoricuaRules: settings.useBoricuaRules,
+        ruleset: settings.ruleset
+      }
+    };
+    
+    const gameRef = await addDoc(gamesCollection, newGame);
+    return { ...newGame, id: gameRef.id };
+  } catch (error) {
+    console.error("Error creating team game:", error);
+    throw error;
   }
 };
 
@@ -269,7 +358,7 @@ export const getUserGames = async (): Promise<Game[]> => {
     
     const userId = auth.currentUser.uid;
     
-    // Get games where user is creator or opponent
+    // Get games where user is creator or opponent (traditional structure)
     const creatorQuery = query(
       gamesCollection,
       where("createdBy", "==", userId),
@@ -284,16 +373,77 @@ export const getUserGames = async (): Promise<Game[]> => {
       limit(DEFAULT_QUERY_LIMIT)
     );
     
+    // First get basic games (these should always work)
     const [creatorSnap, opponentSnap] = await Promise.all([
       getDocs(creatorQuery),
       getDocs(opponentQuery)
     ]);
     
-    const creatorGames = creatorSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Game));
-    const opponentGames = opponentSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Game));
+    const allGames = new Map<string, Game>();
     
-    // Combine and sort by updatedAt, then limit again for safety
-    return [...creatorGames, ...opponentGames]
+    // Add basic games
+    [...creatorSnap.docs, ...opponentSnap.docs].forEach(doc => {
+      const game = { id: doc.id, ...doc.data() } as Game;
+      allGames.set(doc.id, game);
+    });
+    
+    // Try to get team-based games (but don't fail if these fields don't exist)
+    try {
+      // Get games where user is in the opponents array (multi-player support)
+      const opponentsArrayQuery = query(
+        gamesCollection,
+        where("opponents", "array-contains", userId),
+        orderBy("updatedAt", "desc"),
+        limit(DEFAULT_QUERY_LIMIT)
+      );
+      
+      const opponentsArraySnap = await getDocs(opponentsArrayQuery);
+      opponentsArraySnap.docs.forEach(doc => {
+        const game = { id: doc.id, ...doc.data() } as Game;
+        allGames.set(doc.id, game);
+      });
+    } catch (error) {
+      // Skip silently - opponents array field not found
+    }
+    
+    try {
+      // Get games where user is in team1 (team-based games)
+      const team1Query = query(
+        gamesCollection,
+        where("teams.team1", "array-contains", userId),
+        orderBy("updatedAt", "desc"),
+        limit(DEFAULT_QUERY_LIMIT)
+      );
+      
+      const team1Snap = await getDocs(team1Query);
+      team1Snap.docs.forEach(doc => {
+        const game = { id: doc.id, ...doc.data() } as Game;
+        allGames.set(doc.id, game);
+      });
+    } catch (error) {
+      // Skip silently - teams.team1 field not found
+    }
+    
+    try {
+      // Get games where user is in team2 (team-based games)
+      const team2Query = query(
+        gamesCollection,
+        where("teams.team2", "array-contains", userId),
+        orderBy("updatedAt", "desc"),
+        limit(DEFAULT_QUERY_LIMIT)
+      );
+      
+      const team2Snap = await getDocs(team2Query);
+      team2Snap.docs.forEach(doc => {
+        const game = { id: doc.id, ...doc.data() } as Game;
+        allGames.set(doc.id, game);
+      });
+    } catch (error) {
+      // Skip silently - teams.team2 field not found
+    }
+    
+    // Convert to array, sort by updatedAt, and limit
+    return Array.from(allGames.values())
       .sort((a, b) => b.updatedAt.toMillis() - a.updatedAt.toMillis())
       .slice(0, DEFAULT_QUERY_LIMIT);
   } catch (error) {
@@ -331,7 +481,63 @@ export const isPlayerInActiveGame = async (userId: string): Promise<boolean> => 
     ]);
     
     // If either query returns results, the player is in an active game
-    return !creatorSnap.empty || !opponentSnap.empty;
+    if (!creatorSnap.empty || !opponentSnap.empty) {
+      return true;
+    }
+    
+    // Try to check team-based games (but don't fail if these fields don't exist)
+    try {
+      // Check games where user is in opponents array (multi-player support)
+      const opponentsArrayQuery = query(
+        gamesCollection,
+        where("opponents", "array-contains", userId),
+        where("status", "in", activeStatuses),
+        limit(1)
+      );
+      
+      const opponentsArraySnap = await getDocs(opponentsArrayQuery);
+      if (!opponentsArraySnap.empty) {
+        return true;
+      }
+    } catch (error) {
+      // Skip silently - opponents array field not found
+    }
+    
+    try {
+      // Check games where user is in team1 (team-based games)
+      const team1Query = query(
+        gamesCollection,
+        where("teams.team1", "array-contains", userId),
+        where("status", "in", activeStatuses),
+        limit(1)
+      );
+      
+      const team1Snap = await getDocs(team1Query);
+      if (!team1Snap.empty) {
+        return true;
+      }
+    } catch (error) {
+      // Skip silently - teams.team1 field not found
+    }
+    
+    try {
+      // Check games where user is in team2 (team-based games)
+      const team2Query = query(
+        gamesCollection,
+        where("teams.team2", "array-contains", userId),
+        where("status", "in", activeStatuses),
+        limit(1)
+      );
+      
+      const team2Snap = await getDocs(team2Query);
+      if (!team2Snap.empty) {
+        return true;
+      }
+    } catch (error) {
+      // Skip silently - teams.team2 field not found
+    }
+    
+    return false;
   } catch (error) {
     console.error("Error checking active games:", error);
     return false;
@@ -345,7 +551,7 @@ export const getNewInvitations = async (): Promise<Game[]> => {
     
     const userId = auth.currentUser.uid;
     
-    // Only query games where current user is the opponent and status is "invited"
+    // Query games where current user is the opponent and status is "invited"
     const invitationsQuery = query(
       gamesCollection,
       where("opponent", "==", userId),
@@ -354,10 +560,77 @@ export const getNewInvitations = async (): Promise<Game[]> => {
       limit(DEFAULT_QUERY_LIMIT)
     );
     
-    const snapshot = await getDocs(invitationsQuery);
+    const invitationsSnap = await getDocs(invitationsQuery);
+    const allInvitations = new Map<string, Game>();
     
-    // Convert to Game objects
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Game));
+    // Add basic invitations
+    invitationsSnap.docs.forEach(doc => {
+      const game = { id: doc.id, ...doc.data() } as Game;
+      allInvitations.set(doc.id, game);
+    });
+    
+    // Try to get team-based invitations (but don't fail if these fields don't exist)
+    try {
+      // Query games where current user is in opponents array and status is "invited" (multi-player support)
+      const opponentsArrayQuery = query(
+        gamesCollection,
+        where("opponents", "array-contains", userId),
+        where("status", "==", "invited"),
+        orderBy("createdAt", "desc"),
+        limit(DEFAULT_QUERY_LIMIT)
+      );
+      
+      const opponentsArraySnap = await getDocs(opponentsArrayQuery);
+      opponentsArraySnap.docs.forEach(doc => {
+        const game = { id: doc.id, ...doc.data() } as Game;
+        allInvitations.set(doc.id, game);
+      });
+    } catch (error) {
+      // Skip silently - opponents array field not found
+    }
+    
+    try {
+      // Query games where current user is in team1 and status is "invited" (team-based games)
+      const team1Query = query(
+        gamesCollection,
+        where("teams.team1", "array-contains", userId),
+        where("status", "==", "invited"),
+        orderBy("createdAt", "desc"),
+        limit(DEFAULT_QUERY_LIMIT)
+      );
+      
+      const team1Snap = await getDocs(team1Query);
+      team1Snap.docs.forEach(doc => {
+        const game = { id: doc.id, ...doc.data() } as Game;
+        allInvitations.set(doc.id, game);
+      });
+    } catch (error) {
+      // Skip silently - teams.team1 field not found
+    }
+    
+    try {
+      // Query games where current user is in team2 and status is "invited" (team-based games)
+      const team2Query = query(
+        gamesCollection,
+        where("teams.team2", "array-contains", userId),
+        where("status", "==", "invited"),
+        orderBy("createdAt", "desc"),
+        limit(DEFAULT_QUERY_LIMIT)
+      );
+      
+      const team2Snap = await getDocs(team2Query);
+      team2Snap.docs.forEach(doc => {
+        const game = { id: doc.id, ...doc.data() } as Game;
+        allInvitations.set(doc.id, game);
+      });
+    } catch (error) {
+      // Skip silently - teams.team2 field not found
+    }
+    
+    // Convert to array and sort by createdAt
+    return Array.from(allInvitations.values())
+      .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis())
+      .slice(0, DEFAULT_QUERY_LIMIT);
   } catch (error) {
     console.error("Error fetching invitations:", error);
     return [];
@@ -988,7 +1261,7 @@ export const updateUsername = async (userId: string, username: string): Promise<
   }
 };
 
-// Get all active leagues with their rankings
+// Get all active leagues with their rankings - OPTIMIZED VERSION
 export const getAllLeaguesWithRankings = async (): Promise<{
   id: string;
   name: string;
@@ -1001,7 +1274,7 @@ export const getAllLeaguesWithRankings = async (): Promise<{
   rankings: RankingEntry[];
 }[]> => {
   try {
-    // Get all active leagues
+    // Get all active leagues first
     const leaguesQuery = query(
       collection(db, "leagues"),
       where("status", "==", "active"),
@@ -1010,40 +1283,72 @@ export const getAllLeaguesWithRankings = async (): Promise<{
     );
     
     const leaguesSnapshot = await getDocs(leaguesQuery);
-    const leagues = [];
     
-    for (const leagueDoc of leaguesSnapshot.docs) {
+    if (leaguesSnapshot.empty) {
+      return [];
+    }
+    
+    const leagueIds = leaguesSnapshot.docs.map(doc => doc.id);
+    
+    // Fetch all league-season associations in parallel
+    const leagueSeasonsPromise = Promise.all(
+      leagueIds.map(async (leagueId) => {
+        try {
+          const leagueSeasonsQuery = query(
+            collection(db, "leagueSeasons"),
+            where("leagueId", "==", leagueId),
+            where("status", "==", "active")
+          );
+          const leagueSeasonsSnap = await getDocs(leagueSeasonsQuery);
+          return {
+            leagueId,
+            seasonIds: leagueSeasonsSnap.docs.map(doc => doc.data().seasonId)
+          };
+        } catch (error) {
+          console.warn(`Error fetching seasons for league ${leagueId}:`, error);
+          return { leagueId, seasonIds: [] };
+        }
+      })
+    );
+    
+    // Fetch all league rankings in parallel
+    const rankingsPromise = Promise.all(
+      leagueIds.map(async (leagueId) => {
+        try {
+          const rankings = await getLeagueRankings(leagueId);
+          return { leagueId, rankings };
+        } catch (error) {
+          console.warn(`Error fetching rankings for league ${leagueId}:`, error);
+          return { leagueId, rankings: [] };
+        }
+      })
+    );
+    
+    // Wait for all data to be fetched in parallel
+    const [leagueSeasons, leagueRankings] = await Promise.all([
+      leagueSeasonsPromise,
+      rankingsPromise
+    ]);
+    
+    // Create lookup maps for better performance
+    const seasonsMap = new Map(leagueSeasons.map(ls => [ls.leagueId, ls.seasonIds]));
+    const rankingsMap = new Map(leagueRankings.map(lr => [lr.leagueId, lr.rankings]));
+    
+    // Build final result array
+    const leagues = leaguesSnapshot.docs.map(leagueDoc => {
       const leagueData = leagueDoc.data();
-      
-      // Get league rankings
-      const rankings = await getLeagueRankings(leagueDoc.id);
-      
-      // Get associated seasons for this league
-      let seasonIds: string[] = [];
-      try {
-        const leagueSeasonsQuery = query(
-          collection(db, "leagueSeasons"),
-          where("leagueId", "==", leagueDoc.id),
-          where("status", "==", "active")
-        );
-        const leagueSeasonsSnap = await getDocs(leagueSeasonsQuery);
-        seasonIds = leagueSeasonsSnap.docs.map(doc => doc.data().seasonId);
-      } catch (error) {
-        console.warn('Error fetching seasons for league:', leagueDoc.id, error);
-      }
-      
-      leagues.push({
+      return {
         id: leagueDoc.id,
         name: leagueData.name,
         description: leagueData.description,
         photoURL: leagueData.photoURL,
         createdAt: leagueData.createdAt,
         status: leagueData.status,
-        currentSeason: leagueData.currentSeason || "2024", // Default to current year if not set
-        seasonIds: seasonIds, // Array of associated season IDs
-        rankings
-      });
-    }
+        currentSeason: leagueData.currentSeason || "2024",
+        seasonIds: seasonsMap.get(leagueDoc.id) || [],
+        rankings: rankingsMap.get(leagueDoc.id) || []
+      };
+    });
     
     return leagues;
   } catch (error) {
@@ -1052,20 +1357,29 @@ export const getAllLeaguesWithRankings = async (): Promise<{
   }
 };
 
-// Get rankings for a specific league
+// Get rankings for a specific league - OPTIMIZED VERSION
 export const getLeagueRankings = async (leagueId: string): Promise<RankingEntry[]> => {
   try {
     const db = getFirestore();
     
-    // Get all members of the league (active and inactive for stats calculation)
-    const allMemberQuery = query(
-      collection(db, "leagueMemberships"),
-      where("leagueId", "==", leagueId),
-      where("status", "in", ["active", "inactive"]), // Include both active and inactive for stats
-      limit(DEFAULT_QUERY_LIMIT)
-    );
+    // Get all members and games in parallel for better performance
+    const [allMemberSnap, gamesSnapshot] = await Promise.all([
+      // Get all league members (active and inactive for complete stats)
+      getDocs(query(
+        collection(db, "leagueMemberships"),
+        where("leagueId", "==", leagueId),
+        where("status", "in", ["active", "inactive"]),
+        limit(DEFAULT_QUERY_LIMIT)
+      )),
+      // Get all completed league games
+      getDocs(query(
+        collection(db, "games"),
+        where("leagueId", "==", leagueId),
+        where("status", "==", "completed"),
+        limit(DEFAULT_QUERY_LIMIT)
+      ))
+    ]);
 
-    const allMemberSnap = await getDocs(allMemberQuery);
     const allLeagueUserIds: string[] = [];
     const activeMemberIds: string[] = [];
     
@@ -1073,7 +1387,6 @@ export const getLeagueRankings = async (leagueId: string): Promise<RankingEntry[
       const memberData = doc.data();
       allLeagueUserIds.push(memberData.userId);
       
-      // Keep track of active members for final ranking display
       if (memberData.status === "active") {
         activeMemberIds.push(memberData.userId);
       }
@@ -1083,35 +1396,20 @@ export const getLeagueRankings = async (leagueId: string): Promise<RankingEntry[
       return [];
     }
 
-    // Get league games (games with leagueId)
-    const gamesQuery = query(
-      collection(db, "games"),
-      where("leagueId", "==", leagueId),
-      where("status", "==", "completed"),
-      limit(DEFAULT_QUERY_LIMIT)
+    // Initialize player stats more efficiently
+    const playerStats = Object.fromEntries(
+      allLeagueUserIds.map(userId => [
+        userId,
+        {
+          gamesPlayed: 0,
+          gamesWon: 0,
+          totalPoints: 0,
+          userId
+        }
+      ])
     );
 
-    const gamesSnapshot = await getDocs(gamesQuery);
-    
-    // Calculate league-specific statistics for ALL members (active and inactive)
-    const playerStats: Record<string, {
-      gamesPlayed: number;
-      gamesWon: number;
-      totalPoints: number;
-      userId: string;
-    }> = {};
-
-    // Initialize stats for all league members (including inactive ones for calculations)
-    allLeagueUserIds.forEach(userId => {
-      playerStats[userId] = {
-        gamesPlayed: 0,
-        gamesWon: 0,
-        totalPoints: 0,
-        userId
-      };
-    });
-
-    // Process games to calculate stats (including games with inactive players)
+    // Process games to calculate stats efficiently
     gamesSnapshot.forEach((doc) => {
       const game = doc.data() as {
         createdBy: string;
@@ -1120,66 +1418,85 @@ export const getLeagueRankings = async (leagueId: string): Promise<RankingEntry[
         scores?: { creator: number; opponent: number };
       };
 
-      // Count games if both players were league members (even if inactive now)
-      if (allLeagueUserIds.includes(game.createdBy) && allLeagueUserIds.includes(game.opponent)) {
+      // Only count games where both players are league members
+      const creatorStats = playerStats[game.createdBy];
+      const opponentStats = playerStats[game.opponent];
+      
+      if (creatorStats && opponentStats) {
         // Update games played
-        playerStats[game.createdBy].gamesPlayed++;
-        playerStats[game.opponent].gamesPlayed++;
+        creatorStats.gamesPlayed++;
+        opponentStats.gamesPlayed++;
 
         // Update wins and points based on winner
         if (game.winner === game.createdBy) {
-          playerStats[game.createdBy].gamesWon++;
-          playerStats[game.createdBy].totalPoints += 3; // Points for win
-          playerStats[game.opponent].totalPoints += 0; // Points for loss
+          creatorStats.gamesWon++;
+          creatorStats.totalPoints += 3; // Points for win
+          // opponentStats gets 0 points (default)
         } else if (game.winner === game.opponent) {
-          playerStats[game.opponent].gamesWon++;
-          playerStats[game.opponent].totalPoints += 3; // Points for win
-          playerStats[game.createdBy].totalPoints += 0; // Points for loss
+          opponentStats.gamesWon++;
+          opponentStats.totalPoints += 3; // Points for win
+          // creatorStats gets 0 points (default)
         } else {
           // Draw or no winner - give 1 point each
-          playerStats[game.createdBy].totalPoints += 1;
-          playerStats[game.opponent].totalPoints += 1;
+          creatorStats.totalPoints += 1;
+          opponentStats.totalPoints += 1;
         }
       }
     });
 
-    // Get user display names for ALL members (needed for stats calculation)
-    const userPromises = allLeagueUserIds.map(async (userId) => {
-      try {
-        const userDoc = await getDocs(query(
-          collection(db, "users"),
-          where("__name__", "==", userId)
-        ));
-        
-        if (!userDoc.empty) {
-          const userData = userDoc.docs[0].data();
+    // Batch user data fetching for better performance
+    const activeUserIds = activeMemberIds.filter(userId => playerStats[userId]);
+    
+    if (activeUserIds.length === 0) {
+      return [];
+    }
+
+    // Use batch size for user fetching to avoid hitting Firestore limits
+    const BATCH_SIZE = 10;
+    const userDetailsBatches = [];
+    
+    for (let i = 0; i < activeUserIds.length; i += BATCH_SIZE) {
+      const batch = activeUserIds.slice(i, i + BATCH_SIZE);
+      userDetailsBatches.push(
+        Promise.all(batch.map(async (userId) => {
+          try {
+            const userDoc = await getDoc(doc(db, "users", userId));
+            if (userDoc.exists()) {
+              const userData = userDoc.data();
+              return {
+                userId,
+                displayName: userData.displayName || userData.username || userId,
+                username: userData.username,
+                photoURL: userData.photoURL
+              };
+            }
+          } catch (error) {
+            console.error(`Error fetching user ${userId}:`, error);
+          }
           return {
             userId,
-            displayName: userData.displayName || userData.username || userId,
-            username: userData.username,
-            photoURL: userData.photoURL
+            displayName: userId,
+            username: userId,
+            photoURL: undefined
           };
-        }
-      } catch (error) {
-        console.error(`Error fetching user ${userId}:`, error);
-      }
-      return {
-        userId,
-        displayName: userId,
-        username: userId,
-        photoURL: undefined
-      };
-    });
+        }))
+      );
+    }
 
-    const userDetails = await Promise.all(userPromises);
+    // Await all user detail batches
+    const userDetailsBatchResults = await Promise.all(userDetailsBatches);
+    const userDetails = userDetailsBatchResults.flat();
+    
+    // Create user map for O(1) lookup
     const userMap = new Map(userDetails.map(user => [user.userId, user]));
 
-    // Convert to ranking entries and sort (only show ACTIVE members in rankings)
-    const rankings = Object.values(playerStats)
-      .filter(stats => activeMemberIds.includes(stats.userId)) // Only show active members in rankings
-      .map(stats => {
-        const userDetail = userMap.get(stats.userId);
+    // Build and sort rankings for active members only
+    const rankings = activeUserIds
+      .map(userId => {
+        const stats = playerStats[userId];
+        const userDetail = userMap.get(userId);
         const winRate = stats.gamesPlayed > 0 ? (stats.gamesWon / stats.gamesPlayed) * 100 : 0;
+        
         return {
           userId: stats.userId,
           displayName: userDetail?.displayName || stats.userId,
@@ -1193,7 +1510,7 @@ export const getLeagueRankings = async (leagueId: string): Promise<RankingEntry[
         } as RankingEntry;
       })
       .sort((a, b) => {
-        // Sort by total points first, then by win rate, then by games won
+        // Optimized sorting: total points first, then win rate, then games won
         if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
         if (b.winRate !== a.winRate) return b.winRate - a.winRate;
         return b.gamesWon - a.gamesWon;
@@ -1335,7 +1652,7 @@ export const getAllActiveLeagues = async (): Promise<{id: string, name: string, 
 };
 
 // Get league by ID
-export const getLeagueById = async (leagueId: string): Promise<{id: string, name: string} | null> => {
+export const getLeagueById = async (leagueId: string): Promise<{id: string, name: string, photoURL?: string} | null> => {
   try {
     const leagueDoc = doc(db, "leagues", leagueId);
     const leagueSnap = await getDoc(leagueDoc);
@@ -1344,7 +1661,8 @@ export const getLeagueById = async (leagueId: string): Promise<{id: string, name
       const data = leagueSnap.data();
       return {
         id: leagueSnap.id,
-        name: data.name
+        name: data.name,
+        photoURL: data.photoURL
       };
     }
     
@@ -1561,6 +1879,251 @@ export const getLeagueSeasons = async (leagueId: string): Promise<Season[]> => {
   }
 };
 
+// Update league status based on season dates
+export const updateLeagueStatusBySeason = async (leagueId: string): Promise<boolean> => {
+  try {
+    // Get league data
+    const leagueRef = doc(db, "leagues", leagueId);
+    const leagueDoc = await getDoc(leagueRef);
+    
+    if (!leagueDoc.exists()) {
+      // Only log in development mode since this is handled upstream now
+      if (import.meta.env.DEV) {
+        console.warn(`League ${leagueId} not found during status update`);
+      }
+      return false;
+    }
+    
+    const currentLeagueData = leagueDoc.data();
+    const currentStatus = currentLeagueData.status;
+    
+    // Get associated seasons
+    const seasons = await getLeagueSeasons(leagueId);
+    
+    if (seasons.length === 0) {
+      // No seasons associated, don't auto-update
+      return false;
+    }
+    
+    // Determine new status based on season dates
+    const now = new Date();
+    let newStatus = currentStatus;
+    
+    // Find active seasons
+    const activeSeasons = seasons.filter(season => {
+      const start = season.startDate.toDate();
+      const end = season.endDate.toDate();
+      return start <= now && now <= end;
+    });
+    
+    if (activeSeasons.length > 0) {
+      newStatus = "active";
+    } else {
+      // Check for upcoming seasons
+      const upcomingSeasons = seasons.filter(season => {
+        const start = season.startDate.toDate();
+        return start > now;
+      }).sort((a, b) => a.startDate.toMillis() - b.startDate.toMillis());
+      
+      if (upcomingSeasons.length > 0) {
+        newStatus = "upcoming";
+      } else {
+        // All seasons are completed
+        newStatus = "completed";
+      }
+    }
+    
+    // Update if status has changed
+    if (newStatus !== currentStatus) {
+      await updateDoc(leagueRef, {
+        status: newStatus,
+        updatedAt: serverTimestamp(),
+        lastStatusUpdate: serverTimestamp(),
+        statusUpdateReason: "automatic_season_based_update"
+      });
+      
+      console.log(`League ${leagueId} status updated from ${currentStatus} to ${newStatus}`);
+      return true;
+    }
+    
+    return false;
+  } catch (error) {
+    console.error(`Error updating league status for ${leagueId}:`, error);
+    return false;
+  }
+};
+
+// Batch update all league statuses
+export const updateAllLeagueStatusesBySeasons = async (): Promise<{
+  updated: number;
+  errors: number;
+  total: number;
+}> => {
+  try {
+    // Get all leagues with season associations
+    const leagueSeasonsQuery = query(
+      collection(db, "leagueSeasons"),
+      where("status", "==", "active")
+    );
+    
+    const leagueSeasonsSnap = await getDocs(leagueSeasonsQuery);
+    const uniqueLeagueIds = [...new Set(leagueSeasonsSnap.docs.map(doc => doc.data().leagueId))];
+    
+    // First, verify which leagues actually exist to avoid repeated "not found" errors
+    const existingLeagueIds = new Set<string>();
+    const verificationPromises = uniqueLeagueIds.map(async (leagueId) => {
+      try {
+        const leagueRef = doc(db, "leagues", leagueId);
+        const leagueDoc = await getDoc(leagueRef);
+        if (leagueDoc.exists()) {
+          existingLeagueIds.add(leagueId);
+        } else {
+          // Silently log only in development mode
+          if (import.meta.env.DEV) {
+            console.warn(`League ${leagueId} referenced in leagueSeasons but doesn't exist`);
+          }
+        }
+      } catch (error) {
+        // Silently handle verification errors
+        if (import.meta.env.DEV) {
+          console.warn(`Error verifying league ${leagueId}:`, error);
+        }
+      }
+    });
+    
+    await Promise.all(verificationPromises);
+    const validLeagueIds = Array.from(existingLeagueIds);
+    
+    let updated = 0;
+    let errors = 0;
+    
+    // Process only existing leagues in batches
+    const batchSize = 10;
+    for (let i = 0; i < validLeagueIds.length; i += batchSize) {
+      const batch = validLeagueIds.slice(i, i + batchSize);
+      
+      const updatePromises = batch.map(async (leagueId) => {
+        try {
+          const wasUpdated = await updateLeagueStatusBySeason(leagueId);
+          if (wasUpdated) updated++;
+        } catch (error) {
+          // Only log errors in development mode
+          if (import.meta.env.DEV) {
+            console.error(`Error updating league ${leagueId}:`, error);
+          }
+          errors++;
+        }
+      });
+      
+      await Promise.all(updatePromises);
+      
+      // Small delay between batches to avoid overwhelming Firebase
+      if (i + batchSize < validLeagueIds.length) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+    
+    return {
+      updated,
+      errors,
+      total: validLeagueIds.length
+    };
+  } catch (error) {
+    console.error("Error in updateAllLeagueStatusesBySeasons:", error);
+    return { updated: 0, errors: 1, total: 0 };
+  }
+};
+
+// Clean up orphaned leagueSeasons references
+export const cleanupOrphanedLeagueSeasons = async (): Promise<{ removed: number; errors: number }> => {
+  try {
+    // Get all leagueSeasons
+    const leagueSeasonsQuery = query(collection(db, "leagueSeasons"));
+    const leagueSeasonsSnap = await getDocs(leagueSeasonsQuery);
+    
+    let removed = 0;
+    let errors = 0;
+    
+    const batchSize = 10;
+    for (let i = 0; i < leagueSeasonsSnap.docs.length; i += batchSize) {
+      const batch = leagueSeasonsSnap.docs.slice(i, i + batchSize);
+      
+      const cleanupPromises = batch.map(async (leagueSeasonDoc) => {
+        try {
+          const data = leagueSeasonDoc.data();
+          const leagueId = data.leagueId;
+          
+          // Check if league exists
+          const leagueRef = doc(db, "leagues", leagueId);
+          const leagueDoc = await getDoc(leagueRef);
+          
+          if (!leagueDoc.exists()) {
+            // Delete orphaned leagueSeason
+            await deleteDoc(leagueSeasonDoc.ref);
+            removed++;
+            if (import.meta.env.DEV) {
+              console.log(`Removed orphaned leagueSeason ${leagueSeasonDoc.id} for non-existent league ${leagueId}`);
+            }
+          }
+        } catch (error) {
+          console.error(`Error cleaning up leagueSeason ${leagueSeasonDoc.id}:`, error);
+          errors++;
+        }
+      });
+      
+      await Promise.all(cleanupPromises);
+      
+      // Small delay between batches
+      if (i + batchSize < leagueSeasonsSnap.docs.length) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+    }
+    
+    return { removed, errors };
+  } catch (error) {
+    console.error("Error in cleanupOrphanedLeagueSeasons:", error);
+    return { removed: 0, errors: 1 };
+  }
+};
+
+// Validate league status and update if necessary
+export const validateAndUpdateLeagueStatus = async (leagueId: string): Promise<string> => {
+  try {
+    const leagueRef = doc(db, "leagues", leagueId);
+    const leagueDoc = await getDoc(leagueRef);
+    
+    if (!leagueDoc.exists()) {
+      throw new Error(`League ${leagueId} not found`);
+    }
+    
+    const leagueData = leagueDoc.data();
+    const currentStatus = leagueData.status;
+    
+    // Check if status was recently updated (within 6 hours)
+    const lastUpdate = leagueData.lastStatusUpdate || leagueData.updatedAt;
+    if (lastUpdate) {
+      const lastUpdateTime = lastUpdate.toDate();
+      const now = new Date();
+      const hoursSinceUpdate = (now.getTime() - lastUpdateTime.getTime()) / (1000 * 60 * 60);
+      
+      // If updated recently, trust the current status
+      if (hoursSinceUpdate < 6) {
+        return currentStatus;
+      }
+    }
+    
+    // Update status based on seasons
+    await updateLeagueStatusBySeason(leagueId);
+    
+    // Return the potentially updated status
+    const updatedLeagueDoc = await getDoc(leagueRef);
+    return updatedLeagueDoc.data()?.status || currentStatus;
+  } catch (error) {
+    console.error(`Error validating league status for ${leagueId}:`, error);
+    return "active"; // Default fallback
+  }
+};
+
 // Profile image management functions
 export const uploadProfileImage = async (file: File, userId: string): Promise<string> => {
   try {
@@ -1708,6 +2271,163 @@ export const deleteLeagueImage = async (leagueId: string): Promise<void> => {
       console.error("Error deleting league image:", error);
       throw error;
     }
+  }
+};
+
+// Complete league deletion function
+export const deleteLeagueCompletely = async (leagueId: string): Promise<void> => {
+  try {
+    console.log(`Starting complete deletion of league ${leagueId}`);
+    
+    // Step 1: Delete league image from Firebase Storage
+    try {
+      await deleteLeagueImage(leagueId);
+      console.log(`League image deleted for ${leagueId}`);
+    } catch (error) {
+      console.warn(`Error deleting league image for ${leagueId}:`, error);
+      // Continue with deletion even if image deletion fails
+    }
+    
+    // Step 2: Delete all league memberships
+    try {
+      const membershipsQuery = query(
+        collection(db, "leagueMemberships"),
+        where("leagueId", "==", leagueId)
+      );
+      const membershipsSnap = await getDocs(membershipsQuery);
+      
+      const membershipDeletions = membershipsSnap.docs.map(doc => 
+        deleteDoc(doc.ref)
+      );
+      await Promise.all(membershipDeletions);
+      console.log(`Deleted ${membershipsSnap.docs.length} league memberships for ${leagueId}`);
+    } catch (error) {
+      console.error(`Error deleting league memberships for ${leagueId}:`, error);
+      throw error;
+    }
+    
+    // Step 3: Delete all league join requests
+    try {
+      const joinRequestsQuery = query(
+        collection(db, "leagueJoinRequests"),
+        where("leagueId", "==", leagueId)
+      );
+      const joinRequestsSnap = await getDocs(joinRequestsQuery);
+      
+      const joinRequestDeletions = joinRequestsSnap.docs.map(doc =>
+        deleteDoc(doc.ref)
+      );
+      await Promise.all(joinRequestDeletions);
+      console.log(`Deleted ${joinRequestsSnap.docs.length} join requests for ${leagueId}`);
+    } catch (error) {
+      console.error(`Error deleting join requests for ${leagueId}:`, error);
+      throw error;
+    }
+    
+    // Step 4: Delete all league-season associations
+    try {
+      const leagueSeasonsQuery = query(
+        collection(db, "leagueSeasons"),
+        where("leagueId", "==", leagueId)
+      );
+      const leagueSeasonsSnap = await getDocs(leagueSeasonsQuery);
+      
+      const leagueSeasonDeletions = leagueSeasonsSnap.docs.map(doc =>
+        deleteDoc(doc.ref)
+      );
+      await Promise.all(leagueSeasonDeletions);
+      console.log(`Deleted ${leagueSeasonsSnap.docs.length} league-season associations for ${leagueId}`);
+    } catch (error) {
+      console.error(`Error deleting league-season associations for ${leagueId}:`, error);
+      throw error;
+    }
+    
+    // Step 5: Delete all league-specific games
+    try {
+      const leagueGamesQuery = query(
+        collection(db, "games"),
+        where("leagueId", "==", leagueId)
+      );
+      const leagueGamesSnap = await getDocs(leagueGamesQuery);
+      
+      const gameDeletions = leagueGamesSnap.docs.map(doc =>
+        deleteDoc(doc.ref)
+      );
+      await Promise.all(gameDeletions);
+      console.log(`Deleted ${leagueGamesSnap.docs.length} league games for ${leagueId}`);
+    } catch (error) {
+      console.error(`Error deleting league games for ${leagueId}:`, error);
+      throw error;
+    }
+    
+    // Step 6: Delete league invitations (if any)
+    try {
+      const invitationsQuery = query(
+        collection(db, "leagueInvitations"),
+        where("leagueId", "==", leagueId)
+      );
+      const invitationsSnap = await getDocs(invitationsQuery);
+      
+      const invitationDeletions = invitationsSnap.docs.map(doc =>
+        deleteDoc(doc.ref)
+      );
+      await Promise.all(invitationDeletions);
+      console.log(`Deleted ${invitationsSnap.docs.length} league invitations for ${leagueId}`);
+    } catch (error) {
+      console.error(`Error deleting league invitations for ${leagueId}:`, error);
+      // Don't throw here as this collection might not exist
+    }
+    
+    // Step 7: Delete league tournaments and related data (if any)
+    try {
+      const tournamentsQuery = query(
+        collection(db, "leagueTournaments"),
+        where("leagueId", "==", leagueId)
+      );
+      const tournamentsSnap = await getDocs(tournamentsQuery);
+      
+      const tournamentDeletions = tournamentsSnap.docs.map(doc =>
+        deleteDoc(doc.ref)
+      );
+      await Promise.all(tournamentDeletions);
+      console.log(`Deleted ${tournamentsSnap.docs.length} league tournaments for ${leagueId}`);
+    } catch (error) {
+      console.error(`Error deleting league tournaments for ${leagueId}:`, error);
+      // Don't throw here as this collection might not exist
+    }
+    
+    // Step 8: Delete league teams (if any)
+    try {
+      const teamsQuery = query(
+        collection(db, "leagueTeams"),
+        where("leagueId", "==", leagueId)
+      );
+      const teamsSnap = await getDocs(teamsQuery);
+      
+      const teamDeletions = teamsSnap.docs.map(doc =>
+        deleteDoc(doc.ref)
+      );
+      await Promise.all(teamDeletions);
+      console.log(`Deleted ${teamsSnap.docs.length} league teams for ${leagueId}`);
+    } catch (error) {
+      console.error(`Error deleting league teams for ${leagueId}:`, error);
+      // Don't throw here as this collection might not exist
+    }
+    
+    // Step 9: Finally, delete the league document itself
+    try {
+      const leagueRef = doc(db, "leagues", leagueId);
+      await deleteDoc(leagueRef);
+      console.log(`League document ${leagueId} deleted successfully`);
+    } catch (error) {
+      console.error(`Error deleting league document ${leagueId}:`, error);
+      throw error;
+    }
+    
+    console.log(`Complete deletion of league ${leagueId} finished successfully`);
+  } catch (error) {
+    console.error(`Error in complete league deletion for ${leagueId}:`, error);
+    throw error;
   }
 };
 

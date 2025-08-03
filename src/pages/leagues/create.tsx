@@ -257,6 +257,40 @@ const CreateLeague: React.FC = () => {
         }
       }
 
+      // Determine initial league status based on season dates
+      const getInitialLeagueStatus = () => {
+        const now = new Date();
+        
+        if (formData.createSeason && seasonStartDate && seasonEndDate) {
+          // For new season creation
+          if (seasonStartDate > now) {
+            return "upcoming";
+          } else if (seasonEndDate < now) {
+            return "completed";
+          } else {
+            return "active";
+          }
+        } else if (formData.selectedSeason) {
+          // For existing season selection
+          const selectedSeasonData = globalSeasons.find(s => s.id === formData.selectedSeason);
+          if (selectedSeasonData) {
+            const startDate = selectedSeasonData.startDate.toDate();
+            const endDate = selectedSeasonData.endDate.toDate();
+            
+            if (startDate > now) {
+              return "upcoming";
+            } else if (endDate < now) {
+              return "completed";
+            } else {
+              return "active";
+            }
+          }
+        }
+        
+        // Default to active if no season is associated
+        return "active";
+      };
+
       // Create league document with proper indexing and structure
       const leagueData = {
         name: formData.name.trim(),
@@ -264,7 +298,7 @@ const CreateLeague: React.FC = () => {
         createdBy: auth.currentUser?.uid || "",
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-        status: formData.createSeason && seasonStartDate && seasonStartDate > new Date() ? "upcoming" : "active",
+        status: getInitialLeagueStatus(),
         isPublic: Boolean(formData.isPublic),
         photoURL: uploadedImageUrl || null,
 
