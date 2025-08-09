@@ -109,6 +109,9 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
     game: null as Game | null,
     creator: null as UserProfile | null,
     opponent: null as UserProfile | null,
+    // Team game participants
+    team1Players: [] as UserProfile[],
+    team2Players: [] as UserProfile[],
     leagueInfo: null as {id: string, name: string, photoURL?: string} | null,
     loading: true,
     error: null as string | null,
@@ -128,26 +131,102 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
   const { isOpen: isProfileModalOpen, selectedUser, openModal: openProfileModal, closeModal: closeProfileModal } = useUserProfileModal();
 
   // Destructure for cleaner access
-  const { game, creator, opponent, leagueInfo, loading, error } = gameState;
+  const { game, creator, opponent, team1Players, team2Players, leagueInfo, loading, error } = gameState;
   const { creatorScore, opponentScore, isSubmitting } = scoreState;
   const { rejectionReason } = uiState;
 
-  // Check if current user is part of this game
+  // Helper functions for team games
+  const getActivePlayerName = useCallback(() => {
+    if (!game?.activePlayer) return "Unknown";
+    
+    if (game.teams) {
+      // Team game - find player in teams
+      const allPlayers = [...team1Players, ...team2Players];
+      const activePlayer = allPlayers.find(p => p.uid === game.activePlayer);
+      return activePlayer?.displayName || "Unknown";
+    } else {
+      // Traditional game
+      return game.activePlayer === game.createdBy 
+        ? creator?.displayName || "Creator"
+        : opponent?.displayName || "Opponent";
+    }
+  }, [game, creator, opponent, team1Players, team2Players]);
+
+  const getOpponentNames = useCallback(() => {
+    if (game?.teams) {
+      // For team games, get the opposing team's names
+      const currentUserInTeam1 = team1Players.some(p => p.uid === auth.currentUser?.uid);
+      const opposingTeam = currentUserInTeam1 ? team2Players : team1Players;
+      return opposingTeam.map(p => p.displayName).join(" and ");
+    } else {
+      return opponent?.displayName || "the opponent";
+    }
+  }, [game, opponent, team1Players, team2Players]);
+
+  // Get team names for score display
+  const getTeamDisplayNames = useCallback(() => {
+    if (game?.teams) {
+      const team1Name = team1Players.map(p => p.displayName).join(" + ");
+      const team2Name = team2Players.map(p => p.displayName).join(" + ");
+      return { team1: team1Name, team2: team2Name };
+    } else {
+      return {
+        team1: creator?.displayName || "Creator",
+        team2: opponent?.displayName || "Opponent"
+      };
+    }
+  }, [game, creator, opponent, team1Players, team2Players]);
+
+  // Check if current user is part of this game (works for both traditional and team games)
   const isParticipant = useCallback(() => {
     if (!game || !auth.currentUser) return false;
-    return game.createdBy === auth.currentUser.uid || game.opponent === auth.currentUser.uid;
+    
+    // Check traditional game structure
+    if (game.createdBy === auth.currentUser.uid || game.opponent === auth.currentUser.uid) {
+      return true;
+    }
+    
+    // Check team game structure
+    if (game.teams) {
+      const allPlayers = [...(game.teams.team1 || []), ...(game.teams.team2 || [])];
+      return allPlayers.includes(auth.currentUser.uid);
+    }
+    
+    return false;
   }, [game]);
 
-  // Check if current user is the creator
+  // Check if current user is the creator (for team games, creator is first player of team1)
   const isCreator = useCallback(() => {
     if (!game || !auth.currentUser) return false;
-    return game.createdBy === auth.currentUser.uid;
+    
+    // Traditional game
+    if (game.createdBy === auth.currentUser.uid) {
+      return true;
+    }
+    
+    // Team game - creator is the first player of team1
+    if (game.teams && game.teams.team1 && game.teams.team1.length > 0) {
+      return game.teams.team1[0] === auth.currentUser.uid;
+    }
+    
+    return false;
   }, [game]);
 
-  // Check if current user is the opponent
+  // Check if current user is the opponent (for team games, opponent is first player of team2)
   const isOpponent = useCallback(() => {
     if (!game || !auth.currentUser) return false;
-    return game.opponent === auth.currentUser.uid;
+    
+    // Traditional game
+    if (game.opponent === auth.currentUser.uid) {
+      return true;
+    }
+    
+    // Team game - opponent is the first player of team2
+    if (game.teams && game.teams.team2 && game.teams.team2.length > 0) {
+      return game.teams.team2[0] === auth.currentUser.uid;
+    }
+    
+    return false;
   }, [game]);
   
   // Check if it's current user's turn to submit scores
@@ -209,41 +288,93 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
         return;
       }
 
-      // Then load all related data in parallel (much faster!)
-      const [creatorProfile, opponentProfile, leagueData] = await Promise.allSettled([
-        getUserProfile(gameData.createdBy),
-        getUserProfile(gameData.opponent),
-        gameData.leagueId ? getLeagueById(gameData.leagueId) : Promise.resolve(null)
-      ]);
+      // Check if it's a team game
+      const isTeamGame = gameData.teams && gameData.teams.team1 && gameData.teams.team2;
 
-      // Process results safely
-      const creator = creatorProfile.status === 'fulfilled' ? creatorProfile.value : null;
-      const opponent = opponentProfile.status === 'fulfilled' ? opponentProfile.value : null;
-      const league = leagueData.status === 'fulfilled' ? leagueData.value : null;
-      
-      // Extract league info with photoURL
-      const leagueInfo = league ? {
-        id: league.id,
-        name: league.name,
-        photoURL: league.photoURL
-      } : null;
+      if (isTeamGame) {
+        // Load all team players in parallel
+        const allPlayerIds = [...gameData.teams!.team1, ...gameData.teams!.team2];
+        const playerPromises = allPlayerIds.map(playerId => getUserProfile(playerId));
+        const leaguePromise = gameData.leagueId ? getLeagueById(gameData.leagueId) : Promise.resolve(null);
+        
+        const [playersResults, leagueData] = await Promise.allSettled([
+          Promise.allSettled(playerPromises),
+          leaguePromise
+        ]);
 
-      // Update all state at once
-      setGameState({
-        game: gameData,
-        creator,
-        opponent,
-        leagueInfo,
-        loading: false,
-        error: null,
-      });
+        // Process player results
+        const playerProfiles = playersResults.status === 'fulfilled' 
+          ? (playersResults.value as PromiseSettledResult<UserProfile | null>[])
+            .map(result => result.status === 'fulfilled' ? result.value : null)
+            .filter((profile): profile is UserProfile => profile !== null)
+          : [];
+
+        // Separate team players
+        const team1Players = playerProfiles.filter(profile => 
+          gameData.teams!.team1.includes(profile.uid)
+        );
+        const team2Players = playerProfiles.filter(profile => 
+          gameData.teams!.team2.includes(profile.uid)
+        );
+
+        // Extract league info
+        const league = leagueData.status === 'fulfilled' ? leagueData.value : null;
+        const leagueInfo = league ? {
+          id: league.id,
+          name: league.name,
+          photoURL: league.photoURL
+        } : null;
+
+        // Update state for team game
+        setGameState({
+          game: gameData,
+          creator: null,
+          opponent: null,
+          team1Players,
+          team2Players,
+          leagueInfo,
+          loading: false,
+          error: null,
+        });
+      } else {
+        // Traditional game - load creator and opponent data in parallel
+        const [creatorProfile, opponentProfile, leagueData] = await Promise.allSettled([
+          getUserProfile(gameData.createdBy),
+          getUserProfile(gameData.opponent),
+          gameData.leagueId ? getLeagueById(gameData.leagueId) : Promise.resolve(null)
+        ]);
+
+        // Process results safely
+        const creator = creatorProfile.status === 'fulfilled' ? creatorProfile.value : null;
+        const opponent = opponentProfile.status === 'fulfilled' ? opponentProfile.value : null;
+        const league = leagueData.status === 'fulfilled' ? leagueData.value : null;
+        
+        // Extract league info with photoURL
+        const leagueInfo = league ? {
+          id: league.id,
+          name: league.name,
+          photoURL: league.photoURL
+        } : null;
+
+        // Update all state at once
+        setGameState({
+          game: gameData,
+          creator,
+          opponent,
+          team1Players: [],
+          team2Players: [],
+          leagueInfo,
+          loading: false,
+          error: null,
+        });
+      }
 
       // Initialize scores if they exist
       if (gameData.scores) {
         setScoreState(prev => ({
           ...prev,
-          creatorScore: gameData.scores.creator,
-          opponentScore: gameData.scores.opponent,
+          creatorScore: gameData.scores?.creator || 0,
+          opponentScore: gameData.scores?.opponent || 0,
         }));
       }
     } catch (err) {
@@ -601,9 +732,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
           
           {game.status === "in_progress" && game.activePlayer && (
             <span className="ml-2 sm:ml-3 text-xs sm:text-sm block sm:inline mt-2 sm:mt-0">
-              Current Turn: {game.activePlayer === game.createdBy 
-                ? creator?.displayName || "Creator" 
-                : opponent?.displayName || "Opponent"}
+              Current Turn: {getActivePlayerName()}
             </span>
           )}
         </div>
@@ -651,74 +780,173 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
 
         {/* Participants */}
         <div className="mb-4 sm:mb-6">
-          <h2 className="text-base sm:text-lg font-semibold mb-3">Participants</h2>
-          <div className="flex flex-col sm:flex-row gap-4">
-            <div 
-              className="flex-1 p-3 border border-gray-200 dark:border-zinc-700 rounded-md hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
-              onClick={() => creator && handleUserClick(creator)}
-            >
-              <div className="flex items-center">
-                {creator?.photoURL ? (
-                  <img 
-                    src={creator.photoURL} 
-                    alt={creator.displayName} 
-                    className="w-12 h-12 rounded-full mr-3"
-                  />
-                ) : (
-                  <div className="w-12 h-12 rounded-full bg-blue-500 text-white flex items-center justify-center mr-3">
-                    {creator?.displayName.charAt(0).toUpperCase() || "?"}
-                  </div>
-                )}
-                <div className="flex-1">
-                  <p className="font-medium">{creator?.displayName || "Unknown"}</p>
-                  <p className="text-sm text-gray-500 dark:text-zinc-400">Creator</p>
-                  {creator?.stats && (
-                    <div className="flex space-x-4 mt-1">
-                      <span className="text-xs text-green-600 dark:text-green-400">
-                        {creator.stats.gamesWon} wins
-                      </span>
-                      <span className="text-xs text-blue-600 dark:text-blue-400">
-                        {creator.stats.gamesPlayed} games
-                      </span>
+          <h2 className="text-base sm:text-lg font-semibold mb-3">
+            {game.teams ? "Teams (2 vs 2)" : "Participants"}
+          </h2>
+          
+          {game.teams ? (
+            /* Team Game Display */
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Team 1 */}
+              <div className="border border-blue-200 dark:border-blue-800 rounded-lg p-4 bg-blue-50 dark:bg-blue-900/10">
+                <div className="flex items-center mb-3">
+                  <div className="w-3 h-3 bg-blue-500 rounded-full mr-2"></div>
+                  <h3 className="font-medium text-blue-700 dark:text-blue-300">Team 1</h3>
+                </div>
+                <div className="space-y-3">
+                  {team1Players.map((player, index) => (
+                    <div 
+                      key={player.uid}
+                      className="flex items-center p-2 rounded-md hover:bg-blue-100 dark:hover:bg-blue-800/20 transition-colors cursor-pointer"
+                      onClick={() => handleUserClick(player)}
+                    >
+                      {player.photoURL ? (
+                        <img 
+                          src={player.photoURL} 
+                          alt={player.displayName} 
+                          className="w-8 h-8 rounded-full mr-2"
+                        />
+                      ) : (
+                        <div className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center mr-2 text-sm">
+                          {player.displayName.charAt(0).toUpperCase()}
+                        </div>
+                      )}
+                      <div className="flex-1">
+                        <p className="font-medium text-sm">{player.displayName}</p>
+                        {index === 0 && (
+                          <p className="text-xs text-blue-600 dark:text-blue-400">Team Captain</p>
+                        )}
+                        {player.stats && (
+                          <div className="flex space-x-2 mt-1">
+                            <span className="text-xs text-green-600 dark:text-green-400">
+                              {player.stats.gamesWon}W
+                            </span>
+                            <span className="text-xs text-blue-600 dark:text-blue-400">
+                              {player.stats.gamesPlayed}GP
+                            </span>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  )}
+                  ))}
+                </div>
+              </div>
+
+              {/* Team 2 */}
+              <div className="border border-red-200 dark:border-red-800 rounded-lg p-4 bg-red-50 dark:bg-red-900/10">
+                <div className="flex items-center mb-3">
+                  <div className="w-3 h-3 bg-red-500 rounded-full mr-2"></div>
+                  <h3 className="font-medium text-red-700 dark:text-red-300">Team 2</h3>
+                </div>
+                <div className="space-y-3">
+                  {team2Players.map((player, index) => (
+                    <div 
+                      key={player.uid}
+                      className="flex items-center p-2 rounded-md hover:bg-red-100 dark:hover:bg-red-800/20 transition-colors cursor-pointer"
+                      onClick={() => handleUserClick(player)}
+                    >
+                      {player.photoURL ? (
+                        <img 
+                          src={player.photoURL} 
+                          alt={player.displayName} 
+                          className="w-8 h-8 rounded-full mr-2"
+                        />
+                      ) : (
+                        <div className="w-8 h-8 rounded-full bg-red-500 text-white flex items-center justify-center mr-2 text-sm">
+                          {player.displayName.charAt(0).toUpperCase()}
+                        </div>
+                      )}
+                      <div className="flex-1">
+                        <p className="font-medium text-sm">{player.displayName}</p>
+                        {index === 0 && (
+                          <p className="text-xs text-red-600 dark:text-red-400">Team Captain</p>
+                        )}
+                        {player.stats && (
+                          <div className="flex space-x-2 mt-1">
+                            <span className="text-xs text-green-600 dark:text-green-400">
+                              {player.stats.gamesWon}W
+                            </span>
+                            <span className="text-xs text-blue-600 dark:text-blue-400">
+                              {player.stats.gamesPlayed}GP
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
-            
-            <div 
-              className="flex-1 p-3 border border-gray-200 dark:border-zinc-700 rounded-md hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
-              onClick={() => opponent && handleUserClick(opponent)}
-            >
-              <div className="flex items-center">
-                {opponent?.photoURL ? (
-                  <img 
-                    src={opponent.photoURL} 
-                    alt={opponent.displayName} 
-                    className="w-12 h-12 rounded-full mr-3"
-                  />
-                ) : (
-                  <div className="w-12 h-12 rounded-full bg-blue-500 text-white flex items-center justify-center mr-3">
-                    {opponent?.displayName.charAt(0).toUpperCase() || "?"}
-                  </div>
-                )}
-                <div className="flex-1">
-                  <p className="font-medium">{opponent?.displayName || "Unknown"}</p>
-                  <p className="text-sm text-gray-500 dark:text-zinc-400">Opponent</p>
-                  {opponent?.stats && (
-                    <div className="flex space-x-4 mt-1">
-                      <span className="text-xs text-green-600 dark:text-green-400">
-                        {opponent.stats.gamesWon} wins
-                      </span>
-                      <span className="text-xs text-blue-600 dark:text-blue-400">
-                        {opponent.stats.gamesPlayed} games
-                      </span>
+          ) : (
+            /* Traditional Game Display */
+            <div className="flex flex-col sm:flex-row gap-4">
+              <div 
+                className="flex-1 p-3 border border-gray-200 dark:border-zinc-700 rounded-md hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+                onClick={() => creator && handleUserClick(creator)}
+              >
+                <div className="flex items-center">
+                  {creator?.photoURL ? (
+                    <img 
+                      src={creator.photoURL} 
+                      alt={creator.displayName} 
+                      className="w-12 h-12 rounded-full mr-3"
+                    />
+                  ) : (
+                    <div className="w-12 h-12 rounded-full bg-blue-500 text-white flex items-center justify-center mr-3">
+                      {creator?.displayName.charAt(0).toUpperCase() || "?"}
                     </div>
                   )}
+                  <div className="flex-1">
+                    <p className="font-medium">{creator?.displayName || "Unknown"}</p>
+                    <p className="text-sm text-gray-500 dark:text-zinc-400">Creator</p>
+                    {creator?.stats && (
+                      <div className="flex space-x-4 mt-1">
+                        <span className="text-xs text-green-600 dark:text-green-400">
+                          {creator.stats.gamesWon} wins
+                        </span>
+                        <span className="text-xs text-blue-600 dark:text-blue-400">
+                          {creator.stats.gamesPlayed} games
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+              
+              <div 
+                className="flex-1 p-3 border border-gray-200 dark:border-zinc-700 rounded-md hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+                onClick={() => opponent && handleUserClick(opponent)}
+              >
+                <div className="flex items-center">
+                  {opponent?.photoURL ? (
+                    <img 
+                      src={opponent.photoURL} 
+                      alt={opponent.displayName} 
+                      className="w-12 h-12 rounded-full mr-3"
+                    />
+                  ) : (
+                    <div className="w-12 h-12 rounded-full bg-blue-500 text-white flex items-center justify-center mr-3">
+                      {opponent?.displayName.charAt(0).toUpperCase() || "?"}
+                    </div>
+                  )}
+                  <div className="flex-1">
+                    <p className="font-medium">{opponent?.displayName || "Unknown"}</p>
+                    <p className="text-sm text-gray-500 dark:text-zinc-400">Opponent</p>
+                    {opponent?.stats && (
+                      <div className="flex space-x-4 mt-1">
+                        <span className="text-xs text-green-600 dark:text-green-400">
+                          {opponent.stats.gamesWon} wins
+                        </span>
+                        <span className="text-xs text-blue-600 dark:text-blue-400">
+                          {opponent.stats.gamesPlayed} games
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* Invitation Actions - Only show if this is a pending invitation for the current user */}
@@ -727,7 +955,10 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
             <h2 className="text-lg font-semibold mb-3">Game Invitation</h2>
             <div className="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-900 rounded-md mb-4">
               <p className="mb-3">
-                {creator?.displayName || "A player"} has invited you to play a game of dominoes.
+                {game.teams 
+                  ? `${team1Players[0]?.displayName || "A player"} has invited you to play a team game of dominoes (2 vs 2).`
+                  : `${creator?.displayName || "A player"} has invited you to play a game of dominoes.`
+                }
               </p>
               
               <div className="mb-4">
@@ -777,7 +1008,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
             <h2 className="text-lg font-semibold mb-3">Invitation Sent</h2>
             <div className="p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900 rounded-md mb-4">
               <p>
-                Your invitation has been sent to {opponent?.displayName || "the opponent"}. 
+                Your invitation has been sent to {getOpponentNames()}. 
                 You'll be notified when they accept or decline.
               </p>
             </div>
@@ -833,7 +1064,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
               <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-900 rounded-md mb-4">
                 <p>It's not your turn to submit scores. Wait for the active player to finish their turn.</p>
                 <p className="mt-2 text-sm">
-                  Active player: <span className="font-medium">{game.activePlayer === game.createdBy ? creator?.displayName : opponent?.displayName}</span>
+                  Active player: <span className="font-medium">{getActivePlayerName()}</span>
                 </p>
               </div>
             ) : (
@@ -846,7 +1077,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 mb-4">
                   <div>
                     <label className="block text-sm font-medium mb-1">
-                      {creator?.displayName || "Creator"}
+                      {getTeamDisplayNames().team1}
                     </label>
                     <input
                       type="number"
@@ -860,7 +1091,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
                   </div>
                   <div>
                     <label className="block text-sm font-medium mb-1">
-                      {opponent?.displayName || "Opponent"}
+                      {getTeamDisplayNames().team2}
                     </label>
                     <input
                       type="number"
@@ -894,18 +1125,18 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
           <div className="mb-6">
             <h2 className="text-lg font-semibold mb-3">Confirm Results</h2>
             <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-900 rounded-md mb-4">
-              <p className="mb-3">The other player has submitted the following scores:</p>
+              <p className="mb-3">The other {game.teams ? "team" : "player"} has submitted the following scores:</p>
               <div className="flex justify-center items-center text-center mb-4">
                 <div className="text-center px-6">
-                  <p className="text-sm">{creator?.displayName || "Creator"}</p>
-                  <p className="text-2xl font-bold">{game.scores?.creator}</p>
+                  <p className="text-sm">{getTeamDisplayNames().team1}</p>
+                  <p className="text-2xl font-bold">{game.scores?.creator || game.scores?.team1 || 0}</p>
                 </div>
                 
                 <div className="text-xl font-bold mx-4">-</div>
                 
                 <div className="text-center px-6">
-                  <p className="text-sm">{opponent?.displayName || "Opponent"}</p>
-                  <p className="text-2xl font-bold">{game.scores?.opponent}</p>
+                  <p className="text-sm">{getTeamDisplayNames().team2}</p>
+                  <p className="text-2xl font-bold">{game.scores?.opponent || game.scores?.team2 || 0}</p>
                 </div>
               </div>
               <p className="mb-3">Are these scores correct?</p>
@@ -944,20 +1175,20 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
             <div className="p-4 rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900">
               <div className="flex justify-center items-center text-center mb-4">
                 <div className="text-center px-6">
-                  <p className="text-sm">{creator?.displayName || "Creator"}</p>
-                  <p className="text-3xl font-bold">{game.scores.creator}</p>
+                  <p className="text-sm">{getTeamDisplayNames().team1}</p>
+                  <p className="text-3xl font-bold">{game.scores.creator || game.scores.team1 || 0}</p>
                 </div>
                 
                 <div className="text-xl font-bold mx-4">-</div>
                 
                 <div className="text-center px-6">
-                  <p className="text-sm">{opponent?.displayName || "Opponent"}</p>
-                  <p className="text-3xl font-bold">{game.scores.opponent}</p>
+                  <p className="text-sm">{getTeamDisplayNames().team2}</p>
+                  <p className="text-3xl font-bold">{game.scores.opponent || game.scores.team2 || 0}</p>
                 </div>
               </div>
               
               <p className="text-center font-medium">
-                Game completed
+                {game.teams ? "Team game completed" : "Game completed"}
               </p>
             </div>
           </div>
@@ -981,10 +1212,8 @@ const GameDetail: React.FC<GameDetailProps> = ({ refreshNotifications }) => {
           }`}>
             <p className="text-center font-medium">
               {gameStatus?.isCurrentUserTurn 
-                ? "It's your turn to play and submit the final scores" 
-                : `Waiting for ${game.activePlayer === game.createdBy 
-                    ? creator?.displayName 
-                    : opponent?.displayName} to play and submit the final scores`}
+                ? `It's your turn to play and submit the final scores${game.teams ? " for your team" : ""}` 
+                : `Waiting for ${getActivePlayerName()} to play and submit the final scores`}
             </p>
             {gameStatus?.isCurrentUserTurn && (
               <p className="text-center text-sm mt-2 text-green-600 dark:text-green-400">

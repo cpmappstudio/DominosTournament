@@ -6,9 +6,23 @@ import path from "path";
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  base: process.env.NODE_ENV === 'production' ? '/DominosTournament/' : '/',
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),
     },
   },
+  build: {
+    outDir: 'dist',
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom'],
+          firebase: ['firebase/app', 'firebase/auth', 'firebase/firestore', 'firebase/storage', 'firebase/functions'],
+          router: ['react-router-dom']
+        }
+      }
+    }
+  }
 });

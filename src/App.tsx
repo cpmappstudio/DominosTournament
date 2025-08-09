@@ -14,6 +14,13 @@ import UsernameSetup from "@/components/auth/UsernameSetup";
 import { isJudge } from "./utils/auth";
 import { browserScheduler } from "./utils/leagueStatusScheduler";
 
+// Get base path for GitHub Pages
+const getBasename = () => {
+  return process.env.NODE_ENV === 'production' && window.location.hostname.includes('github.io') 
+    ? '/DominosTournament' 
+    : '';
+};
+
 // Direct imports for critical routes (instant loading)
 import Home from "./pages/Home";
 import Rules from "./pages/Rules";
@@ -30,6 +37,9 @@ const CreateLeague = lazy(() => import("./pages/leagues/create"));
 const LeagueDetail = lazy(() => import("./pages/leagues/detail"));
 const JoinLeague = lazy(() => import("./pages/leagues/join"));
 const LeagueManagement = lazy(() => import("./pages/leagues/manage"));
+
+// Development/Testing pages
+const TestMembershipAdmin = lazy(() => import("./pages/TestMembershipAdmin"));
 
 // Preload strategy for lazy pages
 const preloadLazyPages = () => {
@@ -234,7 +244,7 @@ const App = memo(() => {
       }}
     >
       <ThemeProvider defaultTheme="light" storageKey="vite-ui-theme">
-        <BrowserRouter>
+        <BrowserRouter basename={getBasename()}>
           {/* Username setup is shown only once per user and cannot be changed after setup */}
           {appState.needsUsername && appState.user && (
             <UsernameSetup 
@@ -351,6 +361,16 @@ const AppContent = memo<{
               <LeagueManagement />
             </Suspense>
           ) : <Navigate to="/leagues" />}
+        />
+
+        {/* Development/Testing routes */}
+        <Route
+          path="/test/membership-admin"
+          element={isAuthenticated && user && isJudge(user) ? (
+            <Suspense fallback={<PageLoader />}>
+              <TestMembershipAdmin />
+            </Suspense>
+          ) : <Navigate to="/" />}
         />
 
         {/* Fallback */}

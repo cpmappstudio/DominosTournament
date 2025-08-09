@@ -99,6 +99,74 @@ export const FUTURE_GAME_CONFIG_EXAMPLE: GameConfigurationSchema = {
     }
   ],
 
+  // Starting player options
+  startingPlayerOptions: [
+    {
+      value: "creator",
+      label: "Creador del Juego",
+      description: "El creador del juego inicia",
+      isDefault: true
+    },
+    {
+      value: "opponent",
+      label: "Oponente",
+      description: "El oponente inicia",
+      isDefault: false
+    },
+    {
+      value: "random",
+      label: "Aleatorio",
+      description: "Se selecciona al azar",
+      isDefault: false
+    }
+  ],
+
+  // Time limit options
+  timeLimitOptions: [
+    {
+      value: 0,
+      label: "Sin límite",
+      description: "No hay límite de tiempo",
+      isDefault: true
+    },
+    {
+      value: 30,
+      label: "30 minutos",
+      description: "Partida rápida",
+      isDefault: false
+    },
+    {
+      value: 60,
+      label: "1 hora",
+      description: "Partida estándar",
+      isDefault: false
+    },
+    {
+      value: 120,
+      label: "2 horas",
+      description: "Partida extendida",
+      isDefault: false
+    }
+  ],
+
+  // Number of players options
+  numberOfPlayersOptions: [
+    {
+      value: 2,
+      label: "2 jugadores",
+      description: "Juego individual",
+      isDefault: false,
+      requiredGameModes: ["single", "individual"]
+    },
+    {
+      value: 4,
+      label: "4 jugadores",
+      description: "Juego en parejas",
+      isDefault: true,
+      requiredGameModes: ["double", "parejas"]
+    }
+  ],
+
   // Future features can be added easily
   features: {
     enableTimeouts: true,

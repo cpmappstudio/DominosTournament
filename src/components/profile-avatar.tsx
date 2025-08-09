@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Avatar } from "@/components/avatar";
 import type { User } from "firebase/auth";
+import { getAssetUrl, ASSETS } from "@/utils/assets";
 
 interface ProfileAvatarProps {
   user: User | null;
@@ -16,7 +17,7 @@ export const ProfileAvatar: React.FC<ProfileAvatarProps> = ({
   className = "",
   square = true,
   size = "medium",
-  fallbackSrc = "/profile-photo.jpg",
+  fallbackSrc = getAssetUrl(ASSETS.PROFILE_FALLBACK),
   alt,
 }) => {
   const [imageError, setImageError] = useState(false);

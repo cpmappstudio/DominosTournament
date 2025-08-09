@@ -197,7 +197,18 @@ const CreateGame: React.FC = () => {
     if (!gameStructure.teamsNeeded) return true;
     
     const requiredSize = team === 'team1' ? gameStructure.team1Size - 1 : gameStructure.team2Size; // -1 for team1 (current user)
-    return teamAssignments[team].length === requiredSize;
+    const currentSize = teamAssignments[team].length;
+    const isComplete = currentSize === requiredSize;
+    
+    console.log(`isTeamComplete(${team}):`, {
+      gameStructure,
+      requiredSize,
+      currentSize,
+      teamAssignments: teamAssignments[team],
+      isComplete
+    });
+    
+    return isComplete;
   }, [teamAssignments]);
   
   // Memoized available game modes from dynamic config
@@ -696,7 +707,7 @@ const CreateGame: React.FC = () => {
                 <label className="block text-sm font-medium mb-2">
                   Game Mode
                   {isLeagueControlled("gameMode") && (
-                    <span className="ml-2 text-xs text-blue-600 dark:text-blue-400">(Liga configuración)</span>
+                    <span className="ml-2 text-xs text-blue-600 dark:text-blue-400">(League config)</span>
                   )}
                 </label>
                 {!gameConfig ? (
@@ -826,7 +837,7 @@ const CreateGame: React.FC = () => {
                 <label className="block text-sm font-medium mb-2">
                   Points to Win
                   {isLeagueControlled("pointsToWin") && (
-                    <span className="ml-2 text-xs text-blue-600 dark:text-blue-400">(Liga configuración)</span>
+                    <span className="ml-2 text-xs text-blue-600 dark:text-blue-400">(League config)</span>
                   )}
                 </label>
                 {!gameConfig ? (
@@ -888,7 +899,7 @@ const CreateGame: React.FC = () => {
                 <label className="block text-sm font-medium mb-2">
                   Game Rules
                   {isLeagueControlled("ruleset") && (
-                    <span className="ml-2 text-xs text-blue-600 dark:text-blue-400">(Liga configuración)</span>
+                    <span className="ml-2 text-xs text-blue-600 dark:text-blue-400">(League config)</span>
                   )}
                 </label>
                 {!gameConfig ? (

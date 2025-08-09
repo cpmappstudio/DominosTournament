@@ -58,6 +58,11 @@ const CreateLeague: React.FC = () => {
     seasonName: "",
     resetRankings: true,
     carryOverStats: false,
+    // Payment configuration
+    isPremium: false,
+    monthlyFee: 0,
+    currency: "USD",
+    paymentRequired: false,
   });
 
   // Separate state for calendar dates
@@ -173,6 +178,19 @@ const CreateLeague: React.FC = () => {
     // Game mode compatibility
     if (formData.gameMode === "double" && formData.maxPlayers % 4 !== 0) {
       errors.push("For double games, maximum players must be divisible by 4");
+    }
+
+    // Payment validation
+    if (formData.isPremium) {
+      if (formData.monthlyFee <= 0) {
+        errors.push("Monthly fee must be greater than 0 for premium leagues");
+      }
+      if (formData.monthlyFee > 1000) {
+        errors.push("Monthly fee cannot exceed $1000");
+      }
+      if (!formData.currency) {
+        errors.push("Currency is required for premium leagues");
+      }
     }
 
     return errors;
@@ -332,6 +350,20 @@ const CreateLeague: React.FC = () => {
             timeLimit: formData.timeLimit > 0 ? Number(formData.timeLimit) : null,
             penaltiesEnabled: Boolean(formData.penaltiesEnabled),
           },
+
+          // Payment settings for premium leagues
+          ...(formData.isPremium && {
+            pricing: {
+              monthlyFee: Number(formData.monthlyFee),
+              currency: formData.currency,
+              paymentRequired: Boolean(formData.paymentRequired),
+            },
+            paymentConfig: {
+              squareApplicationId: import.meta.env.VITE_SQUARE_APPLICATION_ID || "",
+              squareLocationId: import.meta.env.VITE_SQUARE_LOCATION_ID || "",
+              squareEnvironment: import.meta.env.VITE_SQUARE_ENVIRONMENT || "sandbox",
+            },
+          }),
         },
 
         // Optimized statistics structure with proper indexing
@@ -756,6 +788,117 @@ const CreateLeague: React.FC = () => {
             )}
           </CardContent>
         </Card>
+
+        {/* Payment Configuration */}
+        <Card className="w-full">
+          <CardHeader>
+            <CardTitle className="border-b pb-2 flex items-center">
+              <svg className="h-5 w-5 mr-2 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
+              </svg>
+              Payment Configuration
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="p-3 bg-amber-50 dark:bg-amber-900/20 rounded-md">
+              <p className="text-sm text-amber-700 dark:text-amber-300">
+                <strong>Premium Leagues:</strong> Set up payment requirements for your league. 
+                Users will need to pay the specified amount to join and participate.
+              </p>
+            </div>
+
+            {/* Premium League Toggle */}
+            <div className="flex items-start gap-3 pt-4 border-t border-gray-200 dark:border-zinc-700">
+              <Checkbox 
+                id="isPremium" 
+                checked={formData.isPremium}
+                onCheckedChange={(checked) => setFormData(prev => ({ 
+                  ...prev, 
+                  isPremium: !!checked,
+                  paymentRequired: !!checked
+                }))}
+              />
+              <div>
+                <Label htmlFor="isPremium" className="text-sm font-medium cursor-pointer">
+                  Make this a Premium League
+                </Label>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  Users will need to pay a membership fee to join this league
+                </p>
+              </div>
+            </div>
+
+            {/* Payment Configuration - Only show when premium is enabled */}
+            {formData.isPremium && (
+              <div className="space-y-4 pl-6 border-l-2 border-green-200 dark:border-green-800">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="monthlyFee" className="text-sm font-medium mb-2 block">
+                      Monthly Fee
+                    </Label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 dark:text-gray-400">
+                        $
+                      </span>
+                      <input
+                        type="number"
+                        id="monthlyFee"
+                        name="monthlyFee"
+                        value={formData.monthlyFee}
+                        onChange={(e) => setFormData(prev => ({ 
+                          ...prev, 
+                          monthlyFee: parseFloat(e.target.value) || 0 
+                        }))}
+                        min="0"
+                        step="0.01"
+                        placeholder="0.00"
+                        className="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-700 dark:border-zinc-600"
+                        required={formData.isPremium}
+                      />
+                    </div>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Amount players pay monthly to maintain membership
+                    </p>
+                  </div>
+
+                  <div>
+                    <Label htmlFor="currency" className="text-sm font-medium mb-2 block">
+                      Currency
+                    </Label>
+                    <select
+                      id="currency"
+                      name="currency"
+                      value={formData.currency}
+                      onChange={(e) => setFormData(prev => ({ ...prev, currency: e.target.value }))}
+                      className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-700 dark:border-zinc-600"
+                    >
+                      <option value="USD">USD - US Dollar</option>
+                      <option value="EUR">EUR - Euro</option>
+                      <option value="GBP">GBP - British Pound</option>
+                      <option value="CAD">CAD - Canadian Dollar</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md p-3">
+                  <div className="flex items-start">
+                    <svg className="h-5 w-5 text-green-500 mr-2 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <div>
+                      <p className="text-sm text-green-700 dark:text-green-300 font-medium">Payment Processing</p>
+                      <p className="text-xs text-green-600 dark:text-green-400 mt-1">
+                        Payments will be processed securely through Square. 
+                        Users can pay with credit cards, Apple Pay, or Google Pay.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+        
         {/* Game Settings */}
         <Card className="w-full">
           <CardHeader>

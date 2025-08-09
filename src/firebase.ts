@@ -26,6 +26,8 @@ import {
   getDownloadURL, 
   deleteObject 
 } from "firebase/storage";
+// Firebase Functions
+import { getFunctions } from "firebase/functions";
 import { Season } from './models/league';
 import config from './config';
 
@@ -34,6 +36,7 @@ const app = initializeApp(config.firebase);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const storage = getStorage(app); // Firebase Storage ENABLED
+const functions = getFunctions(app);
 const googleProvider = new GoogleAuthProvider();
 
 // Query limit from configuration
@@ -2431,5 +2434,5 @@ export const deleteLeagueCompletely = async (leagueId: string): Promise<void> =>
   }
 };
 
-export { auth, db, storage };
+export { auth, db, storage, functions };
 export default app;

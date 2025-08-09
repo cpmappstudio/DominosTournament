@@ -34,6 +34,7 @@ import { Avatar } from './avatar';
 import { ProfileAvatar } from './profile-avatar';
 import { LoginButton } from './login-button';
 import NotificationIndicator from './NotificationIndicator';
+import { getAssetUrl, ASSETS } from '@/utils/assets';
 import { 
   PlayIcon, 
   TableCellsIcon, 
@@ -211,7 +212,7 @@ const StaticSidebar = memo<{
     <SidebarHeader>
       <Link to="/" onClick={handleLinkClick}>
         <SidebarItem className="lg:mb-2.5">
-          <Avatar src="/usa-federation.png" square className="w-32 h-32" />
+          <Avatar src={getAssetUrl(ASSETS.LOGO)} square className="w-32 h-32" />
           <SidebarLabel className="text-white">Domino Gamer</SidebarLabel>
         </SidebarItem>
       </Link>

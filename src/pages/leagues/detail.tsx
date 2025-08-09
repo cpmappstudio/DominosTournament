@@ -1056,6 +1056,33 @@ const LeagueDetail: React.FC = () => {
             {league.description}
           </p>
 
+          {/* Premium League Pricing Information */}
+          {league.settings?.pricing?.paymentRequired && (
+            <div className="bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4 mb-4">
+              <div className="flex items-center mb-2">
+                <svg className="h-5 w-5 text-green-600 dark:text-green-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
+                </svg>
+                <span className="font-semibold text-green-700 dark:text-green-300">Premium League</span>
+              </div>
+              <div className="text-sm text-green-600 dark:text-green-400">
+                <p className="mb-2">
+                  <strong className="text-2xl font-bold">
+                    {new Intl.NumberFormat('en-US', {
+                      style: 'currency',
+                      currency: league.settings.pricing.currency || 'USD',
+                    }).format(league.settings.pricing.monthlyFee)}
+                  </strong>
+                  <span className="text-sm ml-1">/month</span>
+                </p>
+                <p className="text-xs text-green-600 dark:text-green-400">
+                  Monthly membership fee required to participate in this league. 
+                  Payment is processed securely through Square.
+                </p>
+              </div>
+            </div>
+          )}
+
           <div className="flex flex-wrap gap-4 text-sm text-gray-600 dark:text-gray-400 mb-6">
             <div className="flex items-center">
               <UserGroupIcon className="h-5 w-5 mr-1" />

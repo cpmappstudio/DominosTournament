@@ -7,6 +7,7 @@ import {
   Cog6ToothIcon as SettingsIcon,
   ClipboardIcon,
 } from "@heroicons/react/24/solid";
+import { getAssetUrl, ASSETS } from "@/utils/assets";
 
 // Preload functions for remaining lazy pages only
 const preloadPages = {
@@ -69,7 +70,7 @@ const Home: React.FC = () => {
       <div className="text-center mb-10">
         <div className="flex justify-center">
           <img
-            src="/usa-federation-long.png"
+            src={getAssetUrl(ASSETS.LOGO_LONG)}
             alt="USA Domino Federation"
             className="w-48 h-48"
           />
