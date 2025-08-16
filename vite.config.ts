@@ -6,11 +6,24 @@ import path from "path";
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // Base URL for GitHub Pages deployment - updated for new repo name
+  base: process.env.NODE_ENV === 'production' ? '/domino-gamer/' : '/',
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),
     },
   },
-  // Base URL for GitHub Pages deployment
-  base: process.env.NODE_ENV === 'production' ? '/domino-gamer/' : '/',
+  build: {
+    outDir: 'dist',
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom'],
+          firebase: ['firebase/app', 'firebase/auth', 'firebase/firestore', 'firebase/storage', 'firebase/functions'],
+          router: ['react-router-dom']
+        }
+      }
+    }
+  }
 });

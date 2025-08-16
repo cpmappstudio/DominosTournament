@@ -17,21 +17,25 @@ import {
   UserGroupIcon,
   ClockIcon,
   MagnifyingGlassIcon,
+  CurrencyDollarIcon,
 } from "@heroicons/react/24/solid";
 import { League } from "../../models/league";
 import {
   Card,
   CardContent,
 } from "../../components/ui/card";
+import SquareCheckoutModal from "../../components/SquareCheckoutModal";
 
 // Memoized League Card component to prevent unnecessary re-renders
 const LeagueCard = memo<{
-  league: League;
+  league: League & { membershipStatus?: string };
   isMyLeague?: boolean;
   userIsJudge: boolean;
   onNavigate?: () => void;
   currentStatus?: string; // Override status from hook
 }>(({ league, isMyLeague = false, userIsJudge, onNavigate, currentStatus }) => {
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  
   const handleClick = useCallback(() => {
     onNavigate?.();
   }, [onNavigate]);
@@ -48,6 +52,11 @@ const LeagueCard = memo<{
     };
   }, [statusDisplay]);
 
+  // Check if league requires payment
+  const isPremiumLeague = league.settings?.pricing?.paymentRequired;
+  const membershipPrice = league.settings?.pricing?.monthlyFee;
+  const currency = league.settings?.pricing?.currency || 'USD';
+
   const membershipStatus = useMemo(() => {
     // Check if user is the creator/administrator of this league
     const isLeagueCreator = auth.currentUser && league.createdBy === auth.currentUser.uid;
@@ -60,14 +69,34 @@ const LeagueCard = memo<{
     }
     
     if (isMyLeague) {
+      // Check membership status for inactive members
+      if (league.membershipStatus === "inactive") {
+        return {
+          text: "Inactive Member",
+          className: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200",
+          isPayment: isPremiumLeague, // Allow reactivation payment for premium leagues
+          paymentText: isPremiumLeague ? `Pay $${membershipPrice} to Reactivate` : undefined
+        };
+      }
+      
       return {
-        text: "Joined",
+        text: "Active Member",
         className: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200"
       };
     }
     
     // Check if join requests are allowed for this league and if league is active
     if (league.settings?.allowJoinRequests !== false && (displayStatus === "active" || displayStatus === "upcoming")) {
+      // For premium leagues, show payment option
+      if (isPremiumLeague) {
+        return {
+          text: `Pay $${membershipPrice} to Join`,
+          className: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200 hover:bg-green-200 dark:hover:bg-green-900/50",
+          isPayment: true
+        };
+      }
+      
+      // For free leagues, show regular join
       return {
         text: "Join",
         className: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200 hover:bg-green-200 dark:hover:bg-green-900/50",
@@ -78,7 +107,7 @@ const LeagueCard = memo<{
     
     // If league is completed or join requests are not allowed
     return null;
-  }, [userIsJudge, isMyLeague, league.id, league.createdBy, league.settings?.allowJoinRequests, displayStatus]);
+  }, [userIsJudge, isMyLeague, league.id, league.createdBy, league.membershipStatus, league.settings?.allowJoinRequests, displayStatus, isPremiumLeague, membershipPrice, currency]);
 
   return (
     <div className="bg-white dark:bg-zinc-800 rounded-lg shadow-sm border border-gray-200 dark:border-zinc-700 overflow-hidden hover:shadow-md transition-all duration-200 hover:border-blue-300 dark:hover:border-blue-600">
@@ -143,6 +172,15 @@ const LeagueCard = memo<{
               <ClockIcon className="h-4 w-4 mr-1" />
               <span>{new Date(league.createdAt.toDate()).toLocaleDateString()}</span>
             </div>
+            {/* Show price for premium leagues */}
+            {isPremiumLeague && (
+              <div className="flex items-center">
+                <CurrencyDollarIcon className="h-4 w-4 mr-1" />
+                <span className="font-medium text-green-600 dark:text-green-400">
+                  ${membershipPrice}/{currency === 'USD' ? 'month' : currency}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -157,7 +195,14 @@ const LeagueCard = memo<{
           </Link>
 
           {membershipStatus ? (
-            membershipStatus.isLink ? (
+            membershipStatus.isPayment ? (
+              <button
+                onClick={() => setShowPaymentModal(true)}
+                className={`px-3 py-2 text-sm font-medium rounded-md transition-colors ${membershipStatus.className}`}
+              >
+                {membershipStatus.paymentText || membershipStatus.text}
+              </button>
+            ) : membershipStatus.isLink ? (
               <Link
                 to={membershipStatus.href!}
                 className={`px-3 py-2 text-sm font-medium rounded-md transition-colors ${membershipStatus.className}`}
@@ -173,6 +218,23 @@ const LeagueCard = memo<{
           ) : null}
         </div>
       </div>
+      
+      {/* Payment Modal */}
+      {showPaymentModal && isPremiumLeague && (
+        <SquareCheckoutModal
+          isOpen={showPaymentModal}
+          onClose={() => setShowPaymentModal(false)}
+          leagueId={league.id}
+          leagueName={league.name}
+          monthlyFee={membershipPrice!}
+          currency={currency}
+          onSuccess={() => {
+            setShowPaymentModal(false);
+            // Refresh the page or update state to reflect membership
+            window.location.reload();
+          }}
+        />
+      )}
     </div>
   );
 });
@@ -180,7 +242,7 @@ LeagueCard.displayName = 'LeagueCard';
 
 // Memoized My League Card (optimized for the "My Leagues" section)
 const MyLeagueCard = memo<{ 
-  league: League; 
+  league: League & { membershipStatus?: string }; 
   onNavigate?: () => void;
   currentStatus?: string; // Override status from hook
 }>(({ league, onNavigate, currentStatus }) => {
@@ -256,8 +318,12 @@ const MyLeagueCard = memo<{
           </div>
           
           {/* Quick access badge */}
-          <div className="bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 px-2 py-1 rounded-md text-xs font-medium">
-            My League
+          <div className={`px-2 py-1 rounded-md text-xs font-medium ${
+            league.membershipStatus === "inactive"
+              ? "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300"
+              : "bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+          }`}>
+            {league.membershipStatus === "inactive" ? "Inactive Member" : "My League"}
           </div>
         </div>
       </div>
@@ -297,7 +363,7 @@ const LeaguesPage: React.FC = () => {
   // Combined state for better performance
   const [leagueState, setLeagueState] = useState({
     allLeagues: [] as League[],
-    myLeagues: [] as League[],
+    myLeagues: [] as Array<League & { membershipStatus?: string }>,
     loading: true,
     error: null as string | null,
   });
@@ -342,7 +408,7 @@ const LeaguesPage: React.FC = () => {
         const membershipQuery = query(
           membershipsRef,
           where("userId", "==", auth.currentUser.uid),
-          where("status", "in", ["active", "pending"])
+          where("status", "in", ["active", "inactive", "pending"])
         );
         promises.push(getDocs(membershipQuery));
       }
@@ -373,11 +439,20 @@ const LeaguesPage: React.FC = () => {
         // 1. Leagues created by the user (for administrators)
         const createdLeagues = leaguesData.filter((league) => league.createdBy === auth.currentUser!.uid);
         
-        // 2. Leagues where user is a member (from memberships)
-        let memberLeagues: League[] = [];
+        // 2. Leagues where user is a member (from memberships) with their status
+        let memberLeagues: Array<League & { membershipStatus?: string }> = [];
         if (membershipSnapshot) {
-          const leagueIds = membershipSnapshot.docs.map((doc: any) => doc.data().leagueId);
-          memberLeagues = leaguesData.filter((league) => leagueIds.includes(league.id));
+          const membershipData = membershipSnapshot.docs.map((doc: any) => ({
+            leagueId: doc.data().leagueId,
+            status: doc.data().status
+          }));
+          
+          memberLeagues = leaguesData
+            .filter((league) => membershipData.some(m => m.leagueId === league.id))
+            .map((league) => ({
+              ...league,
+              membershipStatus: membershipData.find(m => m.leagueId === league.id)?.status
+            }));
         }
         
         // 3. Combine both arrays and remove duplicates using Set
@@ -386,7 +461,13 @@ const LeaguesPage: React.FC = () => {
           ...memberLeagues.map(l => l.id)
         ]);
         
-        myLeaguesData = leaguesData.filter((league) => allMyLeagueIds.has(league.id));
+        myLeaguesData = leaguesData
+          .filter((league) => allMyLeagueIds.has(league.id))
+          .map((league) => {
+            // Add membership status if available
+            const membershipInfo = memberLeagues.find(ml => ml.id === league.id);
+            return membershipInfo ? { ...league, membershipStatus: membershipInfo.membershipStatus } : league;
+          });
       }
 
       setLeagueState({
@@ -578,10 +659,17 @@ const LeaguesPage: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredLeagues.map((league) => {
               const isMyLeague = leagueState.myLeagues.some(myLeague => myLeague.id === league.id);
+              
+              // Get membership status for this specific league
+              const myLeagueInfo = leagueState.myLeagues.find(myLeague => myLeague.id === league.id);
+              const leagueWithMembershipStatus = myLeagueInfo 
+                ? { ...league, membershipStatus: (myLeagueInfo as any).membershipStatus } as League & { membershipStatus?: string }
+                : league;
+              
               return (
                 <LeagueCard
                   key={league.id}
-                  league={league}
+                  league={leagueWithMembershipStatus}
                   isMyLeague={isMyLeague}
                   userIsJudge={userIsJudge}
                   currentStatus={validatedStatuses[league.id]} // Pass validated status

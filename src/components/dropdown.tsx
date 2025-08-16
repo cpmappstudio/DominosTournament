@@ -10,11 +10,12 @@ export function Dropdown(props: Headless.MenuProps) {
   return <Headless.Menu {...props} />;
 }
 
-export function DropdownButton<T extends React.ElementType = typeof Button>({
+export function DropdownButton({
   as = Button,
+  className,
   ...props
-}: { className?: string } & Omit<Headless.MenuButtonProps<T>, "className">) {
-  return <Headless.MenuButton as={as} {...props} />;
+}: any) {
+  return <Headless.MenuButton as={as} className={className} {...props} />;
 }
 
 export function DropdownMenu({

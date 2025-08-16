@@ -73,6 +73,21 @@ export interface LeagueSettings {
   allowJoinRequests: boolean;
   requireConfirmation: boolean;
   
+  // Payment settings for premium leagues
+  pricing?: {
+    monthlyFee: number;
+    currency: string;
+    paymentRequired: boolean;
+    trialPeriodDays?: number;
+  };
+  
+  // Square payment configuration
+  paymentConfig?: {
+    squareApplicationId?: string;
+    squareLocationId?: string;
+    enabled: boolean;
+  };
+  
   // Game rules - unified ruleset system
   ruleset?: string; // New dynamic ruleset system
   useBoricuaRules?: boolean; // Legacy support - will be migrated to ruleset
@@ -115,8 +130,46 @@ export interface LeagueMember {
   status: MembershipStatus;
   role: LeagueMemberRole;
   
+  // Payment and subscription info
+  paymentStatus?: 'active' | 'expired' | 'pending' | 'cancelled';
+  subscriptionId?: string;
+  membershipExpiresAt?: Timestamp;
+  
   // Player statistics within this league
   stats: LeagueMemberStats;
+}
+
+// Payment record
+export interface LeaguePayment {
+  id: string;
+  userId: string;
+  leagueId: string;
+  amount: number;
+  currency: string;
+  squarePaymentId: string;
+  status: 'pending' | 'completed' | 'failed' | 'refunded';
+  type: 'initial' | 'renewal' | 'penalty';
+  createdAt: Timestamp;
+  processedAt?: Timestamp;
+  failureReason?: string;
+}
+
+// Subscription management
+export interface LeagueSubscription {
+  id: string;
+  userId: string;
+  leagueId: string;
+  status: 'active' | 'expired' | 'cancelled' | 'past_due';
+  currentPeriodStart: Timestamp;
+  currentPeriodEnd: Timestamp;
+  autoRenew: boolean;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  
+  // Payment tracking
+  paymentHistory: string[]; // Payment IDs
+  nextPaymentDate?: Timestamp;
+  lastPaymentId?: string;
 }
 
 // League member statistics

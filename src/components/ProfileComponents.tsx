@@ -1,4 +1,5 @@
 import React, { memo } from "react";
+import { Link } from "react-router-dom";
 
 // Reusable StatCard component from Profile.tsx
 export const StatCard = memo<{ 
@@ -65,9 +66,9 @@ export const LeagueCard = memo<{
 
   if (href) {
     return (
-      <a href={href} style={{ textDecoration: "none" }}>
+      <Link to={href} style={{ textDecoration: "none" }}>
         {CardContent}
-      </a>
+      </Link>
     );
   }
 
