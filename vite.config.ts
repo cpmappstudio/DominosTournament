@@ -11,4 +11,6 @@ export default defineConfig({
       "@": path.resolve(__dirname, "src"),
     },
   },
+  // Base URL for GitHub Pages deployment
+  base: process.env.NODE_ENV === 'production' ? '/domino-gamer/' : '/',
 });
