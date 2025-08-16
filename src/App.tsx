@@ -17,7 +17,7 @@ import { browserScheduler } from "./utils/leagueStatusScheduler";
 // Get base path for GitHub Pages
 const getBasename = () => {
   return process.env.NODE_ENV === 'production' && window.location.hostname.includes('github.io') 
-    ? '/DominosTournament' 
+    ? '/domino-gamer' 
     : '';
 };
 

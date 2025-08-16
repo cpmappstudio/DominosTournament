@@ -34,14 +34,11 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: './DevelopApp/package-lock.json'
 
       - name: Install dependencies
-        working-directory: ./DevelopApp
-        run: npm ci
+        run: npm ci --legacy-peer-deps
 
       - name: Build project
-        working-directory: ./DevelopApp
         run: npm run build
         env:
           NODE_ENV: production
@@ -61,7 +58,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './DevelopApp/dist'
+          path: 'dist'
 
   # Deployment job
   deploy:
