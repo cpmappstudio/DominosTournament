@@ -16,8 +16,8 @@ import { browserScheduler } from "./utils/leagueStatusScheduler";
 
 // Get base path for GitHub Pages
 const getBasename = () => {
-  return process.env.NODE_ENV === 'production' && window.location.hostname.includes('github.io') 
-    ? '/domino-gamer' 
+  return process.env.NODE_ENV === 'production' && window.location.hostname.includes('github.io')
+    ? '/domino-gamer'
     : '';
 };
 
@@ -87,10 +87,10 @@ const useInvitationManager = (user: User | null) => {
 
     // Smart polling: frequent when active, less when inactive
     let intervalId: NodeJS.Timeout;
-    
+
     const handleVisibilityChange = () => {
       clearInterval(intervalId);
-      
+
       if (document.visibilityState === 'visible') {
         fetchInvitations();
         intervalId = setInterval(fetchInvitations, 30000); // 30s
@@ -236,7 +236,7 @@ const App = memo(() => {
         // Log critical errors for monitoring
         console.error('App-level error:', error);
         console.error('Error info:', errorInfo);
-        
+
         // In production, send to error monitoring service
         if (import.meta.env.PROD) {
           // Example: Sentry.captureException(error);
@@ -247,9 +247,9 @@ const App = memo(() => {
         <BrowserRouter basename={getBasename()}>
           {/* Username setup is shown only once per user and cannot be changed after setup */}
           {appState.needsUsername && appState.user && (
-            <UsernameSetup 
-              user={appState.user} 
-              onComplete={handleUsernameSetupComplete} 
+            <UsernameSetup
+              user={appState.user}
+              onComplete={handleUsernameSetupComplete}
             />
           )}
           <AppContent {...appContentProps} />

@@ -9,6 +9,6 @@ export const getAssetUrl = (path: string): string => {
 // Commonly used asset paths
 export const ASSETS = {
   LOGO: '/usa-federation.png',
-  LOGO_LONG: '/usa-federation-long.png', 
+  LOGO_LONG: '/usa-federation-long.png',
   PROFILE_FALLBACK: '/profile-photo.jpg',
 } as const;
